@@ -1,15 +1,18 @@
-# STAP 1: Gebruik een .NET SDK image voor het bouwen van de applicatie
+# STAP 1: Gebruik een .NET SDK image om de applicatie te bouwen
 FROM mcr.microsoft.com/dotnet/sdk:6.0 AS build
-WORKDIR /src
+WORKDIR /app
 
-# Kopieer projectbestanden en restore dependencies
-COPY . . 
-RUN dotnet restore src/Server/Server.csproj
+# Kopieer alleen de projectbestanden (voor een snellere build-cache)
+COPY ["src/Server/Server.csproj", "src/Server/"]
+WORKDIR /app/src/Server
+RUN dotnet restore
 
-# Build en publiceer de release-versie
-RUN dotnet publish src/Server/Server.csproj -c Release -o /app/publish
+# Kopieer de volledige code en bouw de release-versie
+COPY src/Server/ ./src/Server/
+WORKDIR /app/src/Server
+RUN dotnet publish -c Release -o /app/publish
 
-# STAP 2: Gebruik een kleinere runtime image voor productie
+# STAP 2: Gebruik een runtime image voor productie
 FROM mcr.microsoft.com/dotnet/aspnet:6.0
 WORKDIR /app
 
