@@ -2,14 +2,12 @@
 FROM mcr.microsoft.com/dotnet/sdk:6.0 AS build
 WORKDIR /app
 
-# Kopieer alleen de projectbestanden (voor een snellere build-cache)
-COPY ["src/Server/Server.csproj", "src/Server/"]
+# Kopieer alleen de projectbestanden
+COPY . .
 WORKDIR /app/src/Server
 RUN dotnet restore
 
-# Kopieer de volledige code en bouw de release-versie
-COPY src/Server/ ./src/Server/
-WORKDIR /app/src/Server
+
 RUN dotnet publish -c Release -o /app/publish
 
 # STAP 2: Gebruik een runtime image voor productie
