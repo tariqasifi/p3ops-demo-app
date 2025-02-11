@@ -15,8 +15,8 @@ services:
 
     webapp:
         build:
-            context: .
-            dockerfile: Dockerfile
+            context: ..
+            dockerfile: src/Dockerfile
         container_name: webapp
         environment:
             - ASPNETCORE_ENVIRONMENT=Development
