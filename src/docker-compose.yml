@@ -1,0 +1,37 @@
+version: "3.8"
+
+services:
+    sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        container_name: sqlserver
+        environment:
+            SA_PASSWORD: "P@ssword123"
+            ACCEPT_EULA: "Y"
+            MSSQL_DATABASE: "SportStore"
+        ports:
+            - "1433:1433"
+        networks:
+            - app-network
+
+    webapp:
+        build:
+            context: .
+            dockerfile: Dockerfile
+        container_name: webapp
+        environment:
+            - ASPNETCORE_ENVIRONMENT=Development
+            - DB_SERVER=sqlserver
+            - DB_PORT=1433
+            - DB_NAME=SportStore
+            - DB_USER=sa
+            - DB_PASSWORD=P@ssword123
+        depends_on:
+            - sqlserver
+        ports:
+            - "5000:5000"
+        networks:
+            - app-network
+
+networks:
+    app-network:
+        driver: bridge
