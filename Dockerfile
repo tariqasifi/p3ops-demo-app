@@ -10,7 +10,8 @@ WORKDIR /build
 COPY ./src /src
 
 # Installeer de EF Core CLI tool (dotnet-ef)
-RUN dotnet tool install --global dotnet-ef
+RUN dotnet tool install --global dotnet-ef --version 6.0.25
+
 # Zet pad zodat dotnet-ef beschikbaar is
 ENV PATH="$PATH:/root/.dotnet/tools"
 
