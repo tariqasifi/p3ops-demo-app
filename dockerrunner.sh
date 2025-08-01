@@ -7,8 +7,8 @@ set -x
 export Auth0__M2MClientSecret="${M2MClientSecret}"
 export Auth0__BlazorClientSecret="${BlazorClientSecret}"
 
-# Stel de PostgreSQL connectiestring samen en exporteer deze.
-export ConnectionStrings__PostgreSQL="User ID=${DB_USERNAME};Password=${DB_PASSWORD};Host=${DB_IP};Port=${DB_PORT};Database=${DB_NAME};SSL Mode=Require;Trust Server Certificate=True;Connection Lifetime=0;"
+# Stel de SQL connectiestring samen en exporteer deze.
+export ConnectionStrings__SqlDatabase="Server=${DB_IP},${DB_PORT};Database=${DB_NAME};User Id=${DB_USERNAME};Password=${DB_PASSWORD};Encrypt=True;TrustServerCertificate=True;"
 
 # Voer de EF Core migratiebundle uit om de database bij te werken
 ./migrations
