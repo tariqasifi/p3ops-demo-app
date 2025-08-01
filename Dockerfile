@@ -9,6 +9,9 @@ WORKDIR /build
 # Kopieer de volledige solution/source
 COPY ./src /src
 
+# Voeg de vereiste EF Core Design package toe
+RUN dotnet add /src/Persistence/Persistence.csproj package Microsoft.EntityFrameworkCore.Design --version 6.0.25
+
 # Installeer de EF Core CLI tool (dotnet-ef)
 RUN dotnet tool install --global dotnet-ef --version 6.0.25
 
