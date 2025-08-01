@@ -4,9 +4,9 @@ WORKDIR /app
 
 # Build stage met .NET 8 SDK
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
-WORKDIR /src
+WORKDIR /build
 # Kopieer de volledige solution/source
-COPY . /src
+COPY ..
 
 # Installeer de EF Core CLI tool (dotnet-ef)
 RUN dotnet tool install --global dotnet-ef
@@ -20,13 +20,13 @@ RUN dotnet build "/src/Server/Server.csproj" -c Release
 # Bundle de migraties in een uitvoerbaar bestand (self-contained voor Linux)
 RUN dotnet ef migrations bundle \
     -o /app/migrations \
-    --project /src/Persistence \
-    --startup-project /src/Server \
+    --project src/Persistence \
+    --startup-project src/Server \
     --configuration Release --self-contained --verbose --no-build
 
 # Publish stage (gebruik de build output)
 FROM build AS publish
-RUN dotnet publish "/src/Server/Server.csproj" -c Release -o /app/publish --no-build
+RUN dotnet publish "src/Server/Server.csproj" -c Release -o /app/publish --no-build
 
 # Genereer een ontwikkelcertificaat voor HTTPS
 RUN dotnet dev-certs https --export-path /app/publish/certificate.pem --no-password --format PEM
