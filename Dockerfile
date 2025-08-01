@@ -1,10 +1,11 @@
 # Gebruik de officiële .NET 8 runtime als base image
-FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
+FROM mcr.microsoft.com/dotnet/aspnet:6.0 AS base
 WORKDIR /app
 
 # Build stage met .NET 8 SDK
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:6.0 AS build
 WORKDIR /build
+
 # Kopieer de volledige solution/source
 COPY ./src /src
 
@@ -13,7 +14,7 @@ RUN dotnet tool install --global dotnet-ef
 # Zet pad zodat dotnet-ef beschikbaar is
 ENV PATH="$PATH:/root/.dotnet/tools"
 
-# Build de oplossing (of specifieke project)
+# Build de app
 RUN dotnet build "/src/Server/Server.csproj" -c Release
 
 
@@ -35,12 +36,14 @@ RUN dotnet dev-certs https --export-path /app/publish/certificate.pem --no-passw
 
 # Final stage - runtime image met alleen benodigde bestanden
 FROM base AS final
+WORKDIR /app
+
 # Kopieer gepubliceerde app-bestanden en de migratie bundle + script
 COPY --from=publish /app/publish . 
 COPY --from=publish /app/migrations .
 COPY --from=publish /src/dockerrunner.sh .
 # Geef non-root gebruiker (app) eigenaarrechten op bestanden
-RUN chown -R app:app /app/*
+RUN chmod +x /app/dockerrunner.sh
 # Schakel over naar non-root user 'app' (voor security)
 USER app
 
