@@ -14,7 +14,7 @@ RUN dotnet tool install --global dotnet-ef
 ENV PATH="$PATH:/root/.dotnet/tools"
 
 # Build de oplossing (of specifieke project)
-RUN dotnet build "RUN dotnet build "/src/Server/Server.csproj" -c Release
+RUN dotnet build "/src/Server/Server.csproj" -c Release
 
 
 # Bundle de migraties in een uitvoerbaar bestand (self-contained voor Linux)
