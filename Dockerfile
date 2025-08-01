@@ -23,7 +23,6 @@ RUN dotnet ef migrations bundle \
     --project /src/Persistence \
     --startup-project /src/Server \
     --configuration Release \
-    --self-contained \
     --verbose \
     --no-build
 
