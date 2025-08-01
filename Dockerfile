@@ -20,9 +20,12 @@ RUN dotnet build "/src/Server/Server.csproj" -c Release
 # Bundle de migraties in een uitvoerbaar bestand (self-contained voor Linux)
 RUN dotnet ef migrations bundle \
     -o /app/migrations \
-    --project src/Persistence \
-    --startup-project src/Server \
-    --configuration Release --self-contained --verbose --no-build
+    --project /src/Persistence \
+    --startup-project /src/Server \
+    --configuration Release \
+    --self-contained \
+    --verbose \
+    --no-build
 
 # Publish stage (gebruik de build output)
 FROM build AS publish
