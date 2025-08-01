@@ -14,18 +14,19 @@ RUN dotnet tool install --global dotnet-ef
 ENV PATH="$PATH:/root/.dotnet/tools"
 
 # Build de oplossing (of specifieke project)
-RUN dotnet build "/src/P3OpsDemoApp2.Server/P3OpsDemoApp2.Server.csproj" -c Release
+RUN dotnet build "RUN dotnet build "/src/Server/Server.csproj" -c Release
+
 
 # Bundle de migraties in een uitvoerbaar bestand (self-contained voor Linux)
 RUN dotnet ef migrations bundle \
     -o /app/migrations \
-    --project /src/P3OpsDemoApp2.Persistence \
-    --startup-project /src/P3OpsDemoApp2.Server \
+    --project /src/Persistence \
+    --startup-project /src/Server \
     --configuration Release --self-contained --verbose --no-build
 
 # Publish stage (gebruik de build output)
 FROM build AS publish
-RUN dotnet publish "/src/P3OpsDemoApp2.Server/P3OpsDemoApp2.Server.csproj" -c Release -o /app/publish --no-build
+RUN dotnet publish "/src/Server/Server.csproj" -c Release -o /app/publish --no-build
 
 # Genereer een ontwikkelcertificaat voor HTTPS
 RUN dotnet dev-certs https --export-path /app/publish/certificate.pem --no-password --format PEM
