@@ -1,0 +1,17 @@
+#!/bin/bash
+# Stop bij fouten of oningevulde variabelen, en log elke stap (handig voor debuggen)
+set -euo pipefail
+set -x
+
+# Exporteer Auth0 secrets naar omgevingsvariabelen die door de app gelezen worden
+export Auth0__M2MClientSecret="${M2MClientSecret}"
+export Auth0__BlazorClientSecret="${BlazorClientSecret}"
+
+# Stel de PostgreSQL connectiestring samen en exporteer deze.
+export ConnectionStrings__PostgreSQL="User ID=${DB_USERNAME};Password=${DB_PASSWORD};Host=${DB_IP};Port=${DB_PORT};Database=${DB_NAME};SSL Mode=Require;Trust Server Certificate=True;Connection Lifetime=0;"
+
+# Voer de EF Core migratiebundle uit om de database bij te werken
+./migrations
+
+# Start vervolgens de ASP.NET Core applicatie
+exec dotnet /app/P3OpsDemoApp2.Server.dll --urls "http://0.0.0.0:${HTTP_PORT};https://0.0.0.0:${HTTPS_PORT}" --environment ${ENVIRONMENT}
