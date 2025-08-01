@@ -6,7 +6,7 @@ WORKDIR /app
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /build
 # Kopieer de volledige solution/source
-COPY . .
+COPY ./src /src
 
 # Installeer de EF Core CLI tool (dotnet-ef)
 RUN dotnet tool install --global dotnet-ef
