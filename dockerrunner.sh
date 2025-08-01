@@ -14,4 +14,4 @@ export ConnectionStrings__PostgreSQL="User ID=${DB_USERNAME};Password=${DB_PASSW
 ./migrations
 
 # Start vervolgens de ASP.NET Core applicatie
-exec dotnet /app/P3OpsDemoApp2.Server.dll --urls "http://0.0.0.0:${HTTP_PORT};https://0.0.0.0:${HTTPS_PORT}" --environment ${ENVIRONMENT}
+exec dotnet /app/P3OpsDemoApp.Server.dll --urls "http://0.0.0.0:${HTTP_PORT};https://0.0.0.0:${HTTPS_PORT}" --environment ${ENVIRONMENT}
