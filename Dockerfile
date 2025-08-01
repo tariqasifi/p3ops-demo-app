@@ -22,7 +22,7 @@ ENV PATH="$PATH:/root/.dotnet/tools"
 # Build de app
 RUN dotnet build "/src/Server/Server.csproj" -c Release
 
-RUN mkdir -p /app/migrations
+
 
 # Bundle de migraties in een uitvoerbaar bestand (self-contained voor Linux)
 RUN dotnet ef migrations bundle \
