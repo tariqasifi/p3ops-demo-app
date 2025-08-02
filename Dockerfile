@@ -60,13 +60,8 @@ COPY --from=build /dockerrunner.sh .
 RUN chmod +x /app/dockerrunner.sh
 # Schakel over naar non-root user 'app' (voor security)
 
-RUN groupadd -r appgroup && \
-    useradd -r -g appgroup app && \
-    mkdir -p /app && \
-    chown -R app:appgroup /app
 
 USER app
-
 
 
 # Configureer om de HTTPS certificaat bestanden te gebruiken
