@@ -49,6 +49,8 @@ FROM base AS final
 WORKDIR /app
 
 
+COPY ./create-user.sh /create-user.sh
+RUN chmod +x /create-user.sh && /create-user.sh
 
 # Kopieer gepubliceerde app-bestanden en de migratie bundle + script
 COPY --from=publish /app/publish . 
