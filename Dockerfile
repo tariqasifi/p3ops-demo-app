@@ -54,7 +54,7 @@ WORKDIR /app
 
 # Kopieer gepubliceerde app-bestanden en de migratie bundle + script
 COPY --from=publish /app/publish . 
-COPY --from=publish /app/migrations .
+COPY --from=build /app/migrations /app/migrations.
 COPY --from=build /dockerrunner.sh .
 # Geef non-root gebruiker (app) eigenaarrechten op bestanden
 RUN chmod +x /app/dockerrunner.sh
