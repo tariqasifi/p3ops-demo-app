@@ -4,10 +4,10 @@ WORKDIR /app
 
 # Build stage met .NET 8 SDK
 FROM mcr.microsoft.com/dotnet/sdk:6.0 AS build
-WORKDIR /build
+WORKDIR /src
 
 # Kopieer de volledige solution/source
-COPY ./src /src
+COPY . /src
 
 # Zorg dat EF Core en Design op exact dezelfde versie staan
 RUN dotnet add /src/Persistence/Persistence.csproj package Microsoft.EntityFrameworkCore --version 6.0.25
@@ -30,12 +30,14 @@ RUN mkdir -p /app/migrations
 
 # Bundle de migraties in een uitvoerbaar bestand (self-contained voor Linux)
 RUN dotnet ef migrations bundle \
-    -o /app/migrations/ \
+    -o /app/migrations \
     --project /src/Persistence \
     --startup-project /src/Server \
-    --configuration Release \
     --verbose \
-    --no-build
+    --self-contained true \
+    --runtime linux-x64 \
+    --no-build \
+    --configuration Release
 
 # Publish stage (gebruik de build output)
 FROM build AS publish
@@ -53,15 +55,16 @@ WORKDIR /app
 #RUN chmod +x /create-user.sh && /create-user.sh
 
 # Kopieer gepubliceerde app-bestanden en de migratie bundle + script
-COPY --from=build /app/migrations /app/migrations
-COPY --from=build /app/migrations /app/migrations.
-COPY --from=build /dockerrunner.sh .
+COPY --from=publish /app/publish .
+COPY --from=publish /app/migrations .
+COPY --from=publish /src/dockerrunner.sh .
 # Geef non-root gebruiker (app) eigenaarrechten op bestanden
 RUN chmod +x /app/dockerrunner.sh
 # Schakel over naar non-root user 'app' (voor security)
+RUN adduser --disabled-password --gecos "" app
+RUN chown -R app:app /app/*
 
-
-#USER app
+USER app
 
 
 # Configureer om de HTTPS certificaat bestanden te gebruiken
