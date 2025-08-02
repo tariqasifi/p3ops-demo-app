@@ -19,13 +19,19 @@ RUN dotnet tool install --global dotnet-ef --version 6.0.25
 # Zet pad zodat dotnet-ef beschikbaar is
 ENV PATH="$PATH:/root/.dotnet/tools"
 
-COPY ./src/dockerrunner.sh /dockerrunner.sh
-
 
 # Build de app
 RUN dotnet build "./src/Server/Server.csproj" -c Release
 
-RUN dotnet publish "./src/Server/Server.csproj" -c Release -o /app/publish 
+# In build stage
+RUN dotnet dev-certs https --export-path /app/publish/certificate.pem --no-password --format PEM
+
+RUN dotnet publish ./src/Server/Server.csproj \
+    -c Release \
+    -r linux-x64 \
+    --self-contained true \
+    -o /app/publish
+
 
 RUN mkdir -p /app/migrations
 
@@ -40,12 +46,6 @@ RUN dotnet ef migrations bundle \
     --no-build \
     --configuration Release
 
-# Publish stage (gebruik de build output)
-FROM build AS publish
-
-# Genereer een ontwikkelcertificaat voor HTTPS
-RUN dotnet dev-certs https --export-path /app/publish/certificate.pem --no-password --format PEM
-
 # Final stage - runtime image met alleen benodigde bestanden
 FROM base AS final
 WORKDIR /app
@@ -55,9 +55,9 @@ WORKDIR /app
 #RUN chmod +x /create-user.sh && /create-user.sh
 
 # Kopieer gepubliceerde app-bestanden en de migratie bundle + script
-COPY --from=publish /app/publish .
-COPY --from=publish /app/migrations .
-COPY --from=publish /dockerrunner.sh .
+COPY --from=build /app/publish .
+COPY --from=build /app/migrations .
+COPY --from=build /src/src/dockerrunner.sh .
 
 # Schakel over naar non-root user 'app' (voor security)
 RUN chmod +x /app/dockerrunner.sh
