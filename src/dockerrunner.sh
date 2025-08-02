@@ -11,7 +11,7 @@ export Auth0__BlazorClientSecret="${BlazorClientSecret}"
 export ConnectionStrings__SqlDatabase="Server=${DB_IP},${DB_PORT};Database=${DB_NAME};User Id=${DB_USERNAME};Password=${DB_PASSWORD};Encrypt=True;TrustServerCertificate=True;"
 
 # Voer de EF Core migratiebundle uit om de database bij te werken
-/app/migrations/migrations
+/app/migrations
 
 
 # Start vervolgens de ASP.NET Core applicatie
