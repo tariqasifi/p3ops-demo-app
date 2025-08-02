@@ -49,8 +49,8 @@ FROM base AS final
 WORKDIR /app
 
 
-COPY ./create-user.sh /create-user.sh
-RUN chmod +x /create-user.sh && /create-user.sh
+#COPY ./create-user.sh /create-user.sh
+#RUN chmod +x /create-user.sh && /create-user.sh
 
 # Kopieer gepubliceerde app-bestanden en de migratie bundle + script
 COPY --from=publish /app/publish . 
@@ -61,7 +61,7 @@ RUN chmod +x /app/dockerrunner.sh
 # Schakel over naar non-root user 'app' (voor security)
 
 
-USER app
+#USER app
 
 
 # Configureer om de HTTPS certificaat bestanden te gebruiken
