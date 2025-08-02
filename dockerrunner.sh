@@ -11,7 +11,8 @@ export Auth0__BlazorClientSecret="${BlazorClientSecret}"
 export ConnectionStrings__SqlDatabase="Server=${DB_IP},${DB_PORT};Database=${DB_NAME};User Id=${DB_USERNAME};Password=${DB_PASSWORD};Encrypt=True;TrustServerCertificate=True;"
 
 # Voer de EF Core migratiebundle uit om de database bij te werken
-./migrations
+dotnet /app/migrations/migrations.dll
+
 
 # Start vervolgens de ASP.NET Core applicatie
 exec dotnet /app/Server.dll --urls "http://0.0.0.0:${HTTP_PORT};https://0.0.0.0:${HTTPS_PORT}" --environment ${ENVIRONMENT}
