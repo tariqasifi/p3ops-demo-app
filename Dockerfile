@@ -36,7 +36,7 @@ RUN dotnet ef migrations bundle \
 
 # Publish stage (gebruik de build output)
 FROM build AS publish
-RUN dotnet publish "src/Server/Server.csproj" -c Release -o /app/publish --no-build
+RUN dotnet publish "/src/Server/Server.csproj" -c Release -o /app/publish --no-build
 
 # Genereer een ontwikkelcertificaat voor HTTPS
 RUN dotnet dev-certs https --export-path /app/publish/certificate.pem --no-password --format PEM
