@@ -42,8 +42,11 @@ RUN dotnet ef migrations bundle \
     --startup-project ./src/Server \
     --verbose \
     --runtime linux-x64 \
+    --no-self-contained \
     --no-build \
-    --configuration Release
+    --configuration Release \
+    -f
+
 
 # Final stage - runtime image met alleen benodigde bestanden
 FROM base AS final
