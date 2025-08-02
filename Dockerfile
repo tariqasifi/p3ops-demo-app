@@ -19,6 +19,9 @@ RUN dotnet tool install --global dotnet-ef --version 6.0.25
 # Zet pad zodat dotnet-ef beschikbaar is
 ENV PATH="$PATH:/root/.dotnet/tools"
 
+COPY ./dockerrunner.sh /dockerrunner.sh
+
+
 # Build de app
 RUN dotnet build "/src/Server/Server.csproj" -c Release
 
@@ -48,7 +51,7 @@ WORKDIR /app
 # Kopieer gepubliceerde app-bestanden en de migratie bundle + script
 COPY --from=publish /app/publish . 
 COPY --from=publish /app/migrations .
-COPY --from=publish /src/dockerrunner.sh .
+COPY --from=build /dockerrunner.sh .
 # Geef non-root gebruiker (app) eigenaarrechten op bestanden
 RUN chmod +x /app/dockerrunner.sh
 # Schakel over naar non-root user 'app' (voor security)
