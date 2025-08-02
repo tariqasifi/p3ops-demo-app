@@ -37,7 +37,7 @@ RUN dotnet publish ./src/Server/Server.csproj \
 
 # Bundle de migraties in een uitvoerbaar bestand (self-contained voor Linux)
 RUN dotnet ef migrations bundle \
-    -o /app/migrations \
+    -o /app/migrations/migrations.dll \
     --project ./src/Persistence \
     --startup-project ./src/Server \
     --verbose \
