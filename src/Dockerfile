@@ -7,11 +7,11 @@ FROM mcr.microsoft.com/dotnet/sdk:6.0 AS build
 WORKDIR /src
 
 # Kopieer de volledige solution/source
-COPY  . .
+COPY . . 
 
 # Zorg dat EF Core en Design op exact dezelfde versie staan
-RUN dotnet add /src/Persistence/Persistence.csproj package Microsoft.EntityFrameworkCore --version 6.0.25
-RUN dotnet add /src/Persistence/Persistence.csproj package Microsoft.EntityFrameworkCore.Design --version 6.0.25
+RUN dotnet add ./src/Persistence/Persistence.csproj package Microsoft.EntityFrameworkCore --version 6.0.25
+RUN dotnet add ./src/Persistence/Persistence.csproj package Microsoft.EntityFrameworkCore.Design --version 6.0.25
 
 # Installeer de EF Core CLI tool (dotnet-ef)
 RUN dotnet tool install --global dotnet-ef --version 6.0.25
@@ -19,11 +19,11 @@ RUN dotnet tool install --global dotnet-ef --version 6.0.25
 # Zet pad zodat dotnet-ef beschikbaar is
 ENV PATH="$PATH:/root/.dotnet/tools"
 
-COPY ./dockerrunner.sh /dockerrunner.sh
+COPY ./src/dockerrunner.sh /dockerrunner.sh
 
 
 # Build de app
-RUN dotnet build "/src/Server/Server.csproj" -c Release
+RUN dotnet build "./src/Server/Server.csproj" -c Release
 
 
 RUN mkdir -p /app/migrations
@@ -31,8 +31,8 @@ RUN mkdir -p /app/migrations
 # Bundle de migraties in een uitvoerbaar bestand (self-contained voor Linux)
 RUN dotnet ef migrations bundle \
     -o /app/migrations \
-    --project /src/Persistence \
-    --startup-project /src/Server \
+    --project ./src/Persistence \
+    --startup-project ./src/Server \
     --verbose \
     --self-contained true \
     --runtime linux-x64 \
@@ -41,7 +41,7 @@ RUN dotnet ef migrations bundle \
 
 # Publish stage (gebruik de build output)
 FROM build AS publish
-RUN dotnet publish "/src/Server/Server.csproj" -c Release -o /app/publish --no-build
+RUN dotnet publish "./src/Server/Server.csproj" -c Release -o /app/publish --no-build
 
 # Genereer een ontwikkelcertificaat voor HTTPS
 RUN dotnet dev-certs https --export-path /app/publish/certificate.pem --no-password --format PEM
@@ -57,13 +57,12 @@ WORKDIR /app
 # Kopieer gepubliceerde app-bestanden en de migratie bundle + script
 COPY --from=publish /app/publish .
 COPY --from=publish /app/migrations .
-COPY --from=publish /src/dockerrunner.sh .
-# Geef non-root gebruiker (app) eigenaarrechten op bestanden
-RUN chmod +x /app/dockerrunner.sh
+COPY --from=publish /dockerrunner.sh .
+
 # Schakel over naar non-root user 'app' (voor security)
+RUN chmod +x /app/dockerrunner.sh
 RUN adduser --disabled-password --gecos "" app
 RUN chown -R app:app /app/*
-
 USER app
 
 
