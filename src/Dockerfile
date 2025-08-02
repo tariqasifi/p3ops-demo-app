@@ -42,7 +42,6 @@ RUN dotnet ef migrations bundle \
     --startup-project ./src/Server \
     --verbose \
     --runtime linux-x64 \
-    --self-contained false \
     --no-build \
     --configuration Release \
     -f
