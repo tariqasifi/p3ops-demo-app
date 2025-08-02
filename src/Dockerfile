@@ -25,6 +25,7 @@ COPY ./src/dockerrunner.sh /dockerrunner.sh
 # Build de app
 RUN dotnet build "./src/Server/Server.csproj" -c Release
 
+RUN dotnet publish "./src/Server/Server.csproj" -c Release -o /app/publish 
 
 RUN mkdir -p /app/migrations
 
@@ -41,7 +42,6 @@ RUN dotnet ef migrations bundle \
 
 # Publish stage (gebruik de build output)
 FROM build AS publish
-RUN dotnet publish "./src/Server/Server.csproj" -c Release -o /app/publish --no-build
 
 # Genereer een ontwikkelcertificaat voor HTTPS
 RUN dotnet dev-certs https --export-path /app/publish/certificate.pem --no-password --format PEM
