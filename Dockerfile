@@ -55,6 +55,8 @@ COPY --from=build /dockerrunner.sh .
 # Geef non-root gebruiker (app) eigenaarrechten op bestanden
 RUN chmod +x /app/dockerrunner.sh
 # Schakel over naar non-root user 'app' (voor security)
+RUN useradd -m app
+
 USER app
 
 # Configureer om de HTTPS certificaat bestanden te gebruiken
