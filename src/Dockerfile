@@ -33,7 +33,7 @@ RUN dotnet publish ./src/Server/Server.csproj \
     -o /app/publish
 
 
-RUN mkdir -p /app/migrations
+
 
 # Bundle de migraties in een uitvoerbaar bestand (self-contained voor Linux)
 RUN dotnet ef migrations bundle \
