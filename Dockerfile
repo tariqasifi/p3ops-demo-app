@@ -59,7 +59,8 @@ COPY --from=build /dockerrunner.sh .
 RUN chmod +x /app/dockerrunner.sh
 # Schakel over naar non-root user 'app' (voor security)
 
-RUN chown -R app:app /app
+RUN adduser --disabled-password --gecos "" app && \
+    chown -R app:app /app
 
 USER app
 
