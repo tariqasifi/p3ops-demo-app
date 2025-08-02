@@ -48,6 +48,9 @@ RUN dotnet dev-certs https --export-path /app/publish/certificate.pem --no-passw
 FROM base AS final
 WORKDIR /app
 
+RUN useradd -m app
+
+
 # Kopieer gepubliceerde app-bestanden en de migratie bundle + script
 COPY --from=publish /app/publish . 
 COPY --from=publish /app/migrations .
@@ -55,7 +58,6 @@ COPY --from=build /dockerrunner.sh .
 # Geef non-root gebruiker (app) eigenaarrechten op bestanden
 RUN chmod +x /app/dockerrunner.sh
 # Schakel over naar non-root user 'app' (voor security)
-RUN useradd -m app
 
 USER app
 
