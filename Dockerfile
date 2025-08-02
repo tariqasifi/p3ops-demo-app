@@ -4,10 +4,10 @@ WORKDIR /app
 
 # Build stage met .NET 8 SDK
 FROM mcr.microsoft.com/dotnet/sdk:6.0 AS build
-WORKDIR /build
+WORKDIR /src
 
 # Kopieer de volledige solution/source
-COPY ./src /src
+COPY . /src
 
 # Zorg dat EF Core en Design op exact dezelfde versie staan
 RUN dotnet add /src/Persistence/Persistence.csproj package Microsoft.EntityFrameworkCore --version 6.0.25
@@ -26,7 +26,7 @@ RUN dotnet build "/src/Server/Server.csproj" -c Release
 
 # Bundle de migraties in een uitvoerbaar bestand (self-contained voor Linux)
 RUN dotnet ef migrations bundle \
-    -o /app/migrations/migrations.dll \
+    -o /app/migrations \
     --project /src/Persistence \
     --startup-project /src/Server \
     --configuration Release \
