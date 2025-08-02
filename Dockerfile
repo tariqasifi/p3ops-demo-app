@@ -48,7 +48,7 @@ RUN dotnet dev-certs https --export-path /app/publish/certificate.pem --no-passw
 FROM base AS final
 WORKDIR /app
 
-
+RUN useradd --create-home --shell /bin/bash app
 
 # Kopieer gepubliceerde app-bestanden en de migratie bundle + script
 COPY --from=publish /app/publish . 
@@ -58,10 +58,12 @@ COPY --from=build /dockerrunner.sh .
 RUN chmod +x /app/dockerrunner.sh
 # Schakel over naar non-root user 'app' (voor security)
 
-RUN useradd --create-home --shell /bin/bash app
 
-
+# Gebruik de non-root user
 USER app
+
+# DEBUG: log info over huidige user en bestandssysteem
+ENTRYPOINT ["bash", "-c", "id && whoami && ls -la /home && ls -la /app && bash /app/dockerrunner.sh"]
 
 
 # Configureer om de HTTPS certificaat bestanden te gebruiken
