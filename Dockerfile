@@ -48,7 +48,10 @@ RUN dotnet dev-certs https --export-path /app/publish/certificate.pem --no-passw
 FROM base AS final
 WORKDIR /app
 
-RUN useradd --create-home --shell /bin/bash app
+RUN useradd -m -s /bin/bash app
+FROM mcr.microsoft.com/dotnet/aspnet:6.0 AS final
+WORKDIR /app
+COPY --from=build /home/app /home/app
 
 # Kopieer gepubliceerde app-bestanden en de migratie bundle + script
 COPY --from=publish /app/publish . 
