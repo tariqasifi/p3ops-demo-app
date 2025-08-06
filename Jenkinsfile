@@ -1,24 +1,30 @@
 pipeline {
   agent any
 
+  triggers {
+    githubPush()
+  }
+
   stages {
-    stage('Build .NET') {
+    stage('Checkout') {
       steps {
-        sh 'dotnet build'
+        checkout scm
       }
     }
 
-    stage('Test') {
+    stage('Test dotnet') {
       steps {
+        sh 'dotnet --version'
         sh 'dotnet test'
       }
     }
 
     stage('Docker Build') {
       steps {
-        sh 'docker build -t ghcr.io/tariqasifi/sportstore:latest .'
+        dir('src') {
+          sh 'docker build -t ghcr.io/tariqasifi/sportstore:latest .'
+        }
       }
     }
   }
 }
-
