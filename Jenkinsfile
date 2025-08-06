@@ -12,9 +12,14 @@ pipeline {
       }
     }
 
-    stage('Test dotnet') {
+    stage('Build .NET') {
       steps {
-        sh 'dotnet --version'
+        sh 'dotnet build'
+      }
+    }
+
+    stage('Test') {
+      steps {
         sh 'dotnet test'
       }
     }
