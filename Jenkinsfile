@@ -31,9 +31,13 @@ pipeline {
 
     stage('Test') {
       steps {
-        sh 'dotnet test'
+        sh '''
+        dotnet restore tests/Domain.Tests/Domain.Tests.csproj
+        dotnet test tests/Domain.Tests/Domain.Tests.csproj
+         '''
       }
     }
+
 
     stage('Docker Login') {
       steps {
