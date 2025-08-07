@@ -3,9 +3,7 @@
 set -euo pipefail
 set -x
 
-# Exporteer Auth0 secrets naar omgevingsvariabelen die door de app gelezen worden
-export Auth0__M2MClientSecret="${M2MClientSecret}"
-export Auth0__BlazorClientSecret="${BlazorClientSecret}"
+
 
 # Stel de SQL connectiestring samen en exporteer deze.
 export ConnectionStrings__SqlDatabase="Server=${DB_IP},${DB_PORT};Database=${DB_NAME};User Id=${DB_USERNAME};Password=${DB_PASSWORD};Encrypt=True;TrustServerCertificate=True;"
