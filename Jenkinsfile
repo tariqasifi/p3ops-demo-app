@@ -4,6 +4,8 @@ pipeline {
   environment {
     REGISTRY = 'ghcr.io'
     IMAGE_NAME = 'tariqasifi/sportstore'
+    APP_SERVER = '192.168.30.20'
+    SSH_CREDENTIALS = 'ssh-appserver'
   }
 
   triggers {
@@ -68,6 +70,52 @@ pipeline {
           docker tag ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} ${REGISTRY}/${IMAGE_NAME}:latest
           docker push ${REGISTRY}/${IMAGE_NAME}:latest
         """
+      }
+    }
+      
+    stage('Deploy to Appserver via SSH') {
+      steps {
+        sshagent(credentials: ["${SSH_CREDENTIALS}"]) {
+          sh """
+            ssh -o StrictHostKeyChecking=no vagrant@${APP_SERVER} << 'ENDSSH'
+              # Login to GHCR 
+              echo \$GITHUB_TOKEN | docker login ghcr.io -u tariqasifi --password-stdin
+
+              # Stop oude containers
+              docker rm -f sportstore-app || true
+              docker rm -f sqlserver || true
+
+              # Pull de nieuwste image
+              docker pull ${REGISTRY}/${IMAGE_NAME}:latest
+
+              # Start SQL Server container
+              docker network create app-net || true
+              docker run -d --name sqlserver \
+                -e "ACCEPT_EULA=Y" \
+                -e "SA_PASSWORD=Hogent2425" \
+                -v \$PWD/sql.crt:/var/opt/mssql/certs/sql.crt:ro \
+                -v \$PWD/sql.key:/var/opt/mssql/certs/sql.key:ro \
+                --network app-net \
+                -p 1433:1433 \
+                mcr.microsoft.com/mssql/server:2022-latest
+
+              # Start de .NET app container
+              docker run -d \
+                -e DB_IP=sqlserver \
+                -e DB_PORT=1433 \
+                -e DB_NAME=SportStoreDb \
+                -e DB_USERNAME=sa \
+                -e DB_PASSWORD=Hogent2425 \
+                -e HTTP_PORT=80 \
+                -e HTTPS_PORT=443 \
+                -e ENVIRONMENT=Production \
+                -p 80:80 -p 443:443 \
+                --name sportstore-app \
+                --network app-net \
+                ${REGISTRY}/${IMAGE_NAME}:latest
+            ENDSSH
+          """
+        }
       }
     }
   }
