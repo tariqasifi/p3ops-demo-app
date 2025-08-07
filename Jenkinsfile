@@ -17,6 +17,12 @@ pipeline {
       }
     }
 
+  stage('Restore') {
+    steps {
+      sh 'dotnet restore src/Server/Server.csproj'
+    }
+  }
+
     stage('Build .NET') {
       steps {
         sh 'dotnet build'
