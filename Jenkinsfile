@@ -13,17 +13,18 @@ pipeline {
   }
 
   stages {
+
     stage('Checkout') {
       steps {
         checkout scm
       }
     }
 
-  stage('Restore') {
-    steps {
-      sh 'dotnet restore src/Server/Server.csproj'
+    stage('Restore') {
+      steps {
+        sh 'dotnet restore src/Server/Server.csproj'
+      }
     }
-  }
 
     stage('Build .NET') {
       steps {
@@ -34,17 +35,16 @@ pipeline {
     stage('Test') {
       steps {
         sh '''
-        dotnet restore tests/Domain.Tests/Domain.Tests.csproj
-        dotnet test tests/Domain.Tests/Domain.Tests.csproj
-         '''
+          dotnet restore tests/Domain.Tests/Domain.Tests.csproj
+          dotnet test tests/Domain.Tests/Domain.Tests.csproj
+        '''
       }
     }
-
 
     stage('Docker Login') {
       steps {
         withCredentials([string(credentialsId: 'Token-GHCR', variable: 'GITHUB_TOKEN')]) {
-          sh 'echo $GITHUB_TOKEN | docker login ghcr.io -u tariqasifi --password-stdin'
+          sh 'echo "$GITHUB_TOKEN" | docker login ghcr.io -u tariqasifi --password-stdin'
         }
       }
     }
@@ -73,53 +73,52 @@ pipeline {
               docker push ${REGISTRY}/${IMAGE_NAME}:latest --disable-content-trust=true
             """
           } catch (Exception e) {
-            echo " Docker push failed: ${e}"
+            echo "Docker push failed: ${e}"
           }
         }
       }
     }
-      
+
     stage('Deploy to Appserver via SSH') {
       environment {
         GITHUB_TOKEN = credentials('Token-GHCR')
       }
       steps {
         sshagent(credentials: ["${SSH_CREDENTIALS}"]) {
-          sh """
-            ssh -o StrictHostKeyChecking=no vagrant@${APP_SERVER} << 'ENDSSH'
-              echo "${GITHUB_TOKEN}" | docker login ghcr.io -u tariqasifi --password-stdin
+          // Triple single quotes to avoid Groovy interpolating $GITHUB_TOKEN
+          sh '''#!/bin/bash
+ssh -o StrictHostKeyChecking=no vagrant@${APP_SERVER} << 'ENDSSH'
+  echo "$GITHUB_TOKEN" | docker login ghcr.io -u tariqasifi --password-stdin
 
-              docker rm -f sportstore-app || true
-              docker rm -f sqlserver || true
+  docker rm -f sportstore-app || true
+  docker rm -f sqlserver || true
 
-              docker network create app-net || true
+  docker network create app-net || true
 
-              docker pull ${REGISTRY}/${IMAGE_NAME}:latest
+  docker pull ${REGISTRY}/${IMAGE_NAME}:latest
 
-              docker run -d --name sqlserver \\
-                -e "ACCEPT_EULA=Y" \\
-                -e "SA_PASSWORD=Hogent2425" \\
-                -v \$PWD/sql.crt:/var/opt/mssql/certs/sql.crt:ro \\
-                -v \$PWD/sql.key:/var/opt/mssql/certs/sql.key:ro \\
-                --network app-net \\
-                -p 1433:1433 \\
-                mcr.microsoft.com/mssql/server:2022-latest
+  docker run -d --name sqlserver \
+    -e "ACCEPT_EULA=Y" \
+    -e "SA_PASSWORD=Hogent2425" \
+    --network app-net \
+    -p 1433:1433 \
+    mcr.microsoft.com/mssql/server:2022-latest
 
-              docker run -d \\
-                -e DB_IP=sqlserver \\
-                -e DB_PORT=1433 \\
-                -e DB_NAME=SportStoreDb \\
-                -e DB_USERNAME=sa \\
-                -e DB_PASSWORD=Hogent2425 \\
-                -e HTTP_PORT=80 \\
-                -e HTTPS_PORT=443 \\
-                -e ENVIRONMENT=Production \\
-                -p 80:80 -p 443:443 \\
-                --name sportstore-app \\
-                --network app-net \\
-                ${REGISTRY}/${IMAGE_NAME}:latest
-            ENDSSH
-          """
+  docker run -d \
+    -e DB_IP=sqlserver \
+    -e DB_PORT=1433 \
+    -e DB_NAME=SportStoreDb \
+    -e DB_USERNAME=sa \
+    -e DB_PASSWORD=Hogent2425 \
+    -e HTTP_PORT=80 \
+    -e HTTPS_PORT=443 \
+    -e ENVIRONMENT=Production \
+    -p 80:80 -p 443:443 \
+    --name sportstore-app \
+    --network app-net \
+    ${REGISTRY}/${IMAGE_NAME}:latest
+ENDSSH
+'''
         }
       }
     }
