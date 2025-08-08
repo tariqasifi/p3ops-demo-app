@@ -67,10 +67,10 @@ pipeline {
             sh """
               docker build -t ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} -f src/Dockerfile .
 
-              docker push ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} --disable-content-trust=false
+              docker push ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} --disable-content-trust=true
 
               docker tag ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} ${REGISTRY}/${IMAGE_NAME}:latest
-              docker push ${REGISTRY}/${IMAGE_NAME}:latest --disable-content-trust=false
+              docker push ${REGISTRY}/${IMAGE_NAME}:latest --disable-content-trust=true
             """
           } catch (Exception e) {
             echo " Docker push failed: ${e}"
