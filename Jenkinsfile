@@ -15,7 +15,7 @@ pipeline {
     CLOUD_USER             = 'azureuser'
     CLOUD_SSH_CREDENTIALS  = 'ssh-azure-appserver'
   }
-//
+
   triggers { githubPush() }
 
   stages {
@@ -62,7 +62,7 @@ pipeline {
       }
     }
 
-    // ----------------- DEPLOY LOCAL (blue/green + nginx edge) -----------------
+    // ----------------- ZERO-DOWNTIME DEPLOY (LOCAL) -----------------
     stage('Deploy to Local (Zero-Downtime)') {
       environment {
         GITHUB_TOKEN = credentials('Token-GHCR')
@@ -71,42 +71,37 @@ pipeline {
       steps {
         sshagent(credentials: ["${SSH_CREDENTIALS}"]) {
           sh '''#!/bin/bash
-set -euo pipefail
 SSH_OPTS="-o StrictHostKeyChecking=no"
-
 ssh $SSH_OPTS ${LOCAL_USER}@${APP_SERVER} \
-  "export GITHUB_TOKEN=${GITHUB_TOKEN} REGISTRY=${REGISTRY} IMAGE_NAME=${IMAGE_NAME} IMAGE_TAG=${IMAGE_TAG} SA_PWD='${SA_PWD}'; bash -s" << 'ENDSSH'
+  "export GITHUB_TOKEN=${GITHUB_TOKEN}; export REGISTRY=${REGISTRY}; export IMAGE_NAME=${IMAGE_NAME}; export IMAGE_TAG=${IMAGE_TAG}; export SA_PWD='${SA_PWD}'; bash -s" << 'ENDSSH'
 set -euo pipefail
 
-CERT_DIR="$HOME/sportstore-certs"
-EDGE_DIR="$HOME/sportstore-edge"
-mkdir -p "$CERT_DIR" "$EDGE_DIR"
+# --- Vars & dirs ---
+BASE_DIR="/opt/sportstore"
+CERT_DIR="\$BASE_DIR/certs"
+NGINX_DIR="\$BASE_DIR/nginx"
+ACTIVE_FILE="\$BASE_DIR/active_color"
+mkdir -p "\$BASE_DIR" "\$CERT_DIR" "\$NGINX_DIR"
 
-# ---- Docker login + netwerk ----
-echo "$GITHUB_TOKEN" | docker login ghcr.io -u tariqasifi --password-stdin
+# --- Docker login & network ---
+echo "\$GITHUB_TOKEN" | docker login ghcr.io -u tariqasifi --password-stdin
 docker network create app-net || true
 
-# ---- Certificaten (idempotent) ----
-[ -f "$CERT_DIR/sql.key" ] || openssl genrsa -out "$CERT_DIR/sql.key" 2048
-if [ ! -f "$CERT_DIR/sql.crt" ]; then
-  openssl req -new -key "$CERT_DIR/sql.key" -out "$CERT_DIR/sql.csr" -subj "/CN=localhost"
-  openssl x509 -req -days 365 -in "$CERT_DIR/sql.csr" -signkey "$CERT_DIR/sql.key" -out "$CERT_DIR/sql.crt"
-  rm -f "$CERT_DIR/sql.csr"
+# --- Certificaten voor Nginx (TLS termination) ---
+[ -f "\$CERT_DIR/tls.key" ] || openssl genrsa -out "\$CERT_DIR/tls.key" 2048
+if [ ! -f "\$CERT_DIR/tls.crt" ]; then
+  openssl req -x509 -new -nodes -key "\$CERT_DIR/tls.key" -sha256 -days 365 -subj "/CN=localhost" -out "\$CERT_DIR/tls.crt"
 fi
-chmod 600 "$CERT_DIR/sql.key" "$CERT_DIR/sql.crt" || true
+chmod 600 "\$CERT_DIR/tls.key" "\$CERT_DIR/tls.crt" || true
 
-[ -f "$CERT_DIR/app.key" ] || openssl genrsa -out "$CERT_DIR/app.key" 2048
-[ -f "$CERT_DIR/app.crt" ] || openssl req -x509 -new -nodes -key "$CERT_DIR/app.key" -sha256 -days 365 -subj "/CN=localhost" -out "$CERT_DIR/app.crt"
-chmod 600 "$CERT_DIR/app.key" "$CERT_DIR/app.crt" || true
-
-# ---- SQL Server (alleen starten als hij nog niet draait) ----
+# --- SQL Server: start eenmaal, blijf draaien ---
 if ! docker ps --format '{{.Names}}' | grep -q '^sqlserver$'; then
   if ! docker ps -a --format '{{.Names}}' | grep -q '^sqlserver$'; then
     docker run -d --name sqlserver \
-      -e "ACCEPT_EULA=Y" -e "SA_PASSWORD=${SA_PWD}" \
-      -v "$CERT_DIR/sql.crt":/var/opt/mssql/certs/sql.crt:ro \
-      -v "$CERT_DIR/sql.key":/var/opt/mssql/certs/sql.key:ro \
-      --network app-net -p 1433:1433 \
+      -e "ACCEPT_EULA=Y" \
+      -e "SA_PASSWORD=\$SA_PWD" \
+      --network app-net \
+      -p 1433:1433 \
       --restart=always \
       mcr.microsoft.com/mssql/server:2022-latest
   else
@@ -114,86 +109,124 @@ if ! docker ps --format '{{.Names}}' | grep -q '^sqlserver$'; then
   fi
 fi
 
-# ---- Edge proxy (nginx via stream, 80/443 -> sportstore-<color>) ----
-ACTIVE_COLOR="blue"
-if [ -f "$EDGE_DIR/nginx.conf" ] && grep -q 'sportstore-green' "$EDGE_DIR/nginx.conf"; then
-  ACTIVE_COLOR="green"
-fi
-NEW_COLOR="green"; [ "$ACTIVE_COLOR" = "green" ] && NEW_COLOR="blue"
-
-cat > "$EDGE_DIR/nginx.conf.$NEW_COLOR" <<EOF
-stream {
-  upstream http_upstream   { server sportstore-$NEW_COLOR:80; }
-  server { listen 80;  proxy_pass http_upstream; }
-  upstream https_upstream  { server sportstore-$NEW_COLOR:443; }
-  server { listen 443; proxy_pass https_upstream; }
+# --- Nginx reverse proxy (host 80/443) ---
+# Genereer nginx.conf + app.conf indien ze ontbreken
+if [ ! -f "\$NGINX_DIR/nginx.conf" ]; then
+  cat > "\$NGINX_DIR/nginx.conf" <<'NGX'
+user  nginx;
+worker_processes  auto;
+events { worker_connections 1024; }
+http {
+  include       /etc/nginx/mime.types;
+  default_type  application/octet-stream;
+  sendfile        on;
+  keepalive_timeout  65;
+  include /etc/nginx/conf.d/*.conf;
 }
-EOF
+NGX
+fi
 
-# Edge container aanwezig?
-if ! docker ps --format '{{.Names}}' | grep -q '^edge$'; then
-  # als edge-bestond: remove oude edge (met oude mount) veilig
-  docker rm -f edge 2>/dev/null || true
-  # start edge met bind mount naar nginx.conf (initieel op active color of op new)
-  if [ ! -f "$EDGE_DIR/nginx.conf" ]; then
-    cp "$EDGE_DIR/nginx.conf.$ACTIVE_COLOR" "$EDGE_DIR/nginx.conf"
-  fi
-  docker run -d --name edge \
+if [ ! -f "\$NGINX_DIR/app.conf" ]; then
+  cat > "\$NGINX_DIR/app.conf" <<'NGX'
+upstream app_upstream {
+  server sportstore-blue:80;
+}
+server {
+  listen 80;
+  server_name _;
+  location / {
+    proxy_pass http://app_upstream;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+  }
+}
+server {
+  listen 443 ssl;
+  server_name _;
+  ssl_certificate     /etc/nginx/certs/tls.crt;
+  ssl_certificate_key /etc/nginx/certs/tls.key;
+  location / {
+    proxy_pass http://app_upstream;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+  }
+}
+NGX
+fi
+
+# Start Nginx container indien niet actief
+if ! docker ps --format '{{.Names}}' | grep -q '^sportstore-edge$'; then
+  # Verwijder dode container (zelfde naam) indien aanwezig
+  docker rm -f sportstore-edge >/dev/null 2>&1 || true
+  docker run -d --name sportstore-edge \
     --network app-net \
     -p 80:80 -p 443:443 \
-    -v "$EDGE_DIR/nginx.conf":/etc/nginx/nginx.conf:ro \
+    -v "\$NGINX_DIR/nginx.conf":/etc/nginx/nginx.conf:ro \
+    -v "\$NGINX_DIR/app.conf":/etc/nginx/conf.d/app.conf:rw \
+    -v "\$CERT_DIR":/etc/nginx/certs:ro \
     --restart=always \
-    nginx:alpine
+    nginx:1.25-alpine
+else
+  # Zorg dat nginx de laatste config gebruikt
+  docker exec sportstore-edge nginx -t && docker exec sportstore-edge nginx -s reload || true
 fi
 
-# ---- Image pull (immutable tag) ----
+# --- Bepaal blue/green ---
+ACTIVE="blue"
+if [ -f "\$ACTIVE_FILE" ]; then
+  ACTIVE="\$(cat "\$ACTIVE_FILE" || echo blue)"
+fi
+NEXT="green"
+[ "\$ACTIVE" = "green" ] && NEXT="blue"
+
+# --- Pull image (immutabele tag) ---
 docker pull ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
 
-# ---- Nieuwe app container (blue/green) zonder host-poorten; edge blijft op 80/443 ----
-APP_NAME="sportstore-${NEW_COLOR}"
-OLD_APP="sportstore-${ACTIVE_COLOR}"
+# --- Start nieuwe (NEXT) app container zonder poorten, alleen via app-net ---
+NEW_NAME="sportstore-\$NEXT"
+OLD_NAME="sportstore-\$ACTIVE"
 
-# Verwijder eventueel gefaalde oude instantie van NEW_COLOR
-docker rm -f "$APP_NAME" 2>/dev/null || true
+# Verwijder eventueel leftover met dezelfde naam
+docker rm -f "\$NEW_NAME" >/dev/null 2>&1 || true
 
-docker run -d --name "$APP_NAME" \
+docker run -d --name "\$NEW_NAME" \
   -e DB_IP=sqlserver \
   -e DB_PORT=1433 \
   -e DB_NAME=SportStoreDb \
   -e DB_USERNAME=sa \
-  -e DB_PASSWORD=${SA_PWD} \
-  -e HTTP_PORT=80 \
-  -e HTTPS_PORT=443 \
+  -e DB_PASSWORD="\$SA_PWD" \
   -e ENVIRONMENT=Production \
-  -v "$CERT_DIR/app.crt":/app/certificate.pem:ro \
-  -v "$CERT_DIR/app.key":/app/certificate.key:ro \
   --network app-net \
   --restart=always \
   ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
 
-# ---- Wachten tot nieuwe container intern reageert (curl in netwerk) ----
-READY=0
-for i in $(seq 1 60); do
-  CODE=$(docker run --rm --network app-net curlimages/curl:8.8.0 -sS -o /dev/null -w "%{http_code}" http://$APP_NAME:80/ || true)
-  if [ "$CODE" = "200" ] || [ "$CODE" = "302" ]; then READY=1; break; fi
+# --- Wacht tot de nieuwe container reageert (readiness via curl op containernaam) ---
+# (geen health endpoint; simpele GET op '/')
+for i in {1..60}; do
+  if docker run --rm --network app-net curlimages/curl:8.8.0 -fsS "http://\$NEW_NAME:80/" >/dev/null 2>&1; then
+    echo "New app is ready"
+    break
+  fi
+  echo "Waiting for new app (\$i/60)..."
   sleep 2
 done
-if [ "$READY" -ne 1 ]; then
-  echo "Nieuwe app ($APP_NAME) kwam niet online. Logs:"
-  docker logs "$APP_NAME" | tail -n 200 || true
-  exit 1
-fi
 
-# ---- Switchen van edge naar nieuwe kleur (near-zero downtime) ----
-cp "$EDGE_DIR/nginx.conf.$NEW_COLOR" "$EDGE_DIR/nginx.conf"
-docker exec edge nginx -t
-docker exec edge nginx -s reload || docker restart edge
+# --- Schakel Nginx upstream om naar de nieuwe container ---
+# Pas de 'server ...:80;' regel in app.conf aan
+sed -i "s/server sportstore-.*:80;/server \$NEW_NAME:80;/" "\$NGINX_DIR/app.conf"
+docker exec sportstore-edge nginx -t
+docker exec sportstore-edge nginx -s reload
 
-# ---- Oude app na korte grace periode weg ----
-sleep 5
-docker rm -f "$OLD_APP" 2>/dev/null || true
+# --- Markeer active color & ruim oude op ---
+echo "\$NEXT" > "\$ACTIVE_FILE"
+# stop en verwijder oude container pas na switch
+docker rm -f "\$OLD_NAME" >/dev/null 2>&1 || true
 
-# ---- netjes uitloggen ----
+# --- Logout registry ---
 docker logout ghcr.io || true
 ENDSSH
 '''
@@ -201,7 +234,7 @@ ENDSSH
       }
     }
 
-    // ----------------- DEPLOY CLOUD (Zero-Downtime) -----------------
+    // ----------------- ZERO-DOWNTIME DEPLOY (CLOUD) -----------------
     stage('Deploy to Cloud (Zero-Downtime)') {
       environment {
         GITHUB_TOKEN = credentials('Token-GHCR')
@@ -210,131 +243,166 @@ ENDSSH
       steps {
         sshagent(credentials: ["${CLOUD_SSH_CREDENTIALS}"]) {
           sh '''#!/bin/bash
-set -euo pipefail
 SSH_OPTS="-o StrictHostKeyChecking=no"
-
 ssh $SSH_OPTS ${CLOUD_USER}@${CLOUD_APP_SERVER} \
-  "export GITHUB_TOKEN=${GITHUB_TOKEN} REGISTRY=${REGISTRY} IMAGE_NAME=${IMAGE_NAME} IMAGE_TAG=${IMAGE_TAG} SA_PWD='${SA_PWD}'; bash -s" << 'ENDSSH'
+  "export GITHUB_TOKEN=${GITHUB_TOKEN}; export REGISTRY=${REGISTRY}; export IMAGE_NAME=${IMAGE_NAME}; export IMAGE_TAG=${IMAGE_TAG}; export SA_PWD='${SA_PWD}'; bash -s" << 'ENDSSH'
 set -euo pipefail
 
-CERT_DIR="$HOME/sportstore-certs"
-EDGE_DIR="$HOME/sportstore-edge"
-mkdir -p "$CERT_DIR" "$EDGE_DIR"
-
-# ---- Docker installeren indien nodig ----
+# --- Vereiste packages / docker ---
 if ! command -v docker >/dev/null 2>&1; then
   curl -fsSL https://get.docker.com | sh
   sudo systemctl enable --now docker
 fi
-
-# ---- GHCR login + netwerk ----
-echo "$GITHUB_TOKEN" | sudo docker login ghcr.io -u tariqasifi --password-stdin
-sudo docker network create app-net || true
-
-# ---- Certificaten (idempotent) ----
-[ -f "$CERT_DIR/sql.key" ] || openssl genrsa -out "$CERT_DIR/sql.key" 2048
-if [ ! -f "$CERT_DIR/sql.crt" ]; then
-  openssl req -new -key "$CERT_DIR/sql.key" -out "$CERT_DIR/sql.csr" -subj "/CN=localhost"
-  openssl x509 -req -days 365 -in "$CERT_DIR/sql.csr" -signkey "$CERT_DIR/sql.key" -out "$CERT_DIR/sql.crt"
-  rm -f "$CERT_DIR/sql.csr"
+if ! docker run --rm hello-world >/dev/null 2>&1; then
+  # in sommige omgevingen is sudo nodig voor docker
+  sudo usermod -aG docker \$USER || true
 fi
-chmod 600 "$CERT_DIR/sql.key" "$CERT_DIR/sql.crt" || true
 
-[ -f "$CERT_DIR/app.key" ] || openssl genrsa -out "$CERT_DIR/app.key" 2048
-[ -f "$CERT_DIR/app.crt" ] || openssl req -x509 -new -nodes -key "$CERT_DIR/app.key" -sha256 -days 365 -subj "/CN=localhost" -out "$CERT_DIR/app.crt"
-chmod 600 "$CERT_DIR/app.key" "$CERT_DIR/app.crt" || true
+# Gebruik sudo consistent op cloud
+alias docker='sudo docker'
 
-# ---- SQL Server (alleen starten als hij nog niet draait) ----
-if ! sudo docker ps --format '{{.Names}}' | grep -q '^sqlserver$'; then
-  if ! sudo docker ps -a --format '{{.Names}}' | grep -q '^sqlserver$'; then
-    sudo docker run -d --name sqlserver \
-      -e "ACCEPT_EULA=Y" -e "SA_PASSWORD=${SA_PWD}" \
-      -v "$CERT_DIR/sql.crt":/var/opt/mssql/certs/sql.crt:ro \
-      -v "$CERT_DIR/sql.key":/var/opt/mssql/certs/sql.key:ro \
-      --network app-net -p 1433:1433 \
+# --- Vars & dirs ---
+BASE_DIR="/opt/sportstore"
+CERT_DIR="\$BASE_DIR/certs"
+NGINX_DIR="\$BASE_DIR/nginx"
+ACTIVE_FILE="\$BASE_DIR/active_color"
+sudo mkdir -p "\$BASE_DIR" "\$CERT_DIR" "\$NGINX_DIR"
+sudo chown -R \$USER:\$USER "\$BASE_DIR"
+
+# --- Docker login & network ---
+echo "\$GITHUB_TOKEN" | docker login ghcr.io -u tariqasifi --password-stdin
+docker network create app-net || true
+
+# --- Certificaten voor Nginx ---
+[ -f "\$CERT_DIR/tls.key" ] || openssl genrsa -out "\$CERT_DIR/tls.key" 2048
+if [ ! -f "\$CERT_DIR/tls.crt" ]; then
+  openssl req -x509 -new -nodes -key "\$CERT_DIR/tls.key" -sha256 -days 365 -subj "/CN=localhost" -out "\$CERT_DIR/tls.crt"
+fi
+chmod 600 "\$CERT_DIR/tls.key" "\$CERT_DIR/tls.crt" || true
+
+# --- SQL Server: start eenmaal, blijf draaien ---
+if ! docker ps --format '{{.Names}}' | grep -q '^sqlserver$'; then
+  if ! docker ps -a --format '{{.Names}}' | grep -q '^sqlserver$'; then
+    docker run -d --name sqlserver \
+      -e "ACCEPT_EULA=Y" \
+      -e "SA_PASSWORD=\$SA_PWD" \
+      --network app-net \
+      -p 1433:1433 \
       --restart=always \
       mcr.microsoft.com/mssql/server:2022-latest
   else
-    sudo docker start sqlserver
+    docker start sqlserver
   fi
 fi
 
-# ---- Edge proxy (nginx) ----
-ACTIVE_COLOR="blue"
-if [ -f "$EDGE_DIR/nginx.conf" ] && grep -q 'sportstore-green' "$EDGE_DIR/nginx.conf"; then
-  ACTIVE_COLOR="green"
-fi
-NEW_COLOR="green"; [ "$ACTIVE_COLOR" = "green" ] && NEW_COLOR="blue"
-
-cat > "$EDGE_DIR/nginx.conf.$NEW_COLOR" <<EOF
-stream {
-  upstream http_upstream   { server sportstore-$NEW_COLOR:80; }
-  server { listen 80;  proxy_pass http_upstream; }
-  upstream https_upstream  { server sportstore-$NEW_COLOR:443; }
-  server { listen 443; proxy_pass https_upstream; }
+# --- Nginx reverse proxy ---
+if [ ! -f "\$NGINX_DIR/nginx.conf" ]; then
+  cat > "\$NGINX_DIR/nginx.conf" <<'NGX'
+user  nginx;
+worker_processes  auto;
+events { worker_connections 1024; }
+http {
+  include       /etc/nginx/mime.types;
+  default_type  application/octet-stream;
+  sendfile        on;
+  keepalive_timeout  65;
+  include /etc/nginx/conf.d/*.conf;
 }
-EOF
+NGX
+fi
 
-if ! sudo docker ps --format '{{.Names}}' | grep -q '^edge$'; then
-  sudo docker rm -f edge 2>/dev/null || true
-  if [ ! -f "$EDGE_DIR/nginx.conf" ]; then
-    cp "$EDGE_DIR/nginx.conf.$ACTIVE_COLOR" "$EDGE_DIR/nginx.conf"
-  fi
-  sudo docker run -d --name edge \
+if [ ! -f "\$NGINX_DIR/app.conf" ]; then
+  cat > "\$NGINX_DIR/app.conf" <<'NGX'
+upstream app_upstream {
+  server sportstore-blue:80;
+}
+server {
+  listen 80;
+  server_name _;
+  location / {
+    proxy_pass http://app_upstream;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+  }
+}
+server {
+  listen 443 ssl;
+  server_name _;
+  ssl_certificate     /etc/nginx/certs/tls.crt;
+  ssl_certificate_key /etc/nginx/certs/tls.key;
+  location / {
+    proxy_pass http://app_upstream;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+  }
+}
+NGX
+fi
+
+if ! docker ps --format '{{.Names}}' | grep -q '^sportstore-edge$'; then
+  docker rm -f sportstore-edge >/dev/null 2>&1 || true
+  docker run -d --name sportstore-edge \
     --network app-net \
     -p 80:80 -p 443:443 \
-    -v "$EDGE_DIR/nginx.conf":/etc/nginx/nginx.conf:ro \
+    -v "\$NGINX_DIR/nginx.conf":/etc/nginx/nginx.conf:ro \
+    -v "\$NGINX_DIR/app.conf":/etc/nginx/conf.d/app.conf:rw \
+    -v "\$CERT_DIR":/etc/nginx/certs:ro \
     --restart=always \
-    nginx:alpine
+    nginx:1.25-alpine
+else
+  docker exec sportstore-edge nginx -t && docker exec sportstore-edge nginx -s reload || true
 fi
 
-# ---- Image pull (immutable tag) ----
-sudo docker pull ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+# --- Bepaal blue/green ---
+ACTIVE="blue"
+if [ -f "\$ACTIVE_FILE" ]; then
+  ACTIVE="\$(cat "\$ACTIVE_FILE" || echo blue)"
+fi
+NEXT="green"
+[ "\$ACTIVE" = "green" ] && NEXT="blue"
 
-# ---- Nieuwe app container (blue/green) ----
-APP_NAME="sportstore-${NEW_COLOR}"
-OLD_APP="sportstore-${ACTIVE_COLOR}"
+# --- Pull image & start nieuwe container ---
+docker pull ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
 
-sudo docker rm -f "$APP_NAME" 2>/dev/null || true
+NEW_NAME="sportstore-\$NEXT"
+OLD_NAME="sportstore-\$ACTIVE"
 
-sudo docker run -d --name "$APP_NAME" \
+docker rm -f "\$NEW_NAME" >/dev/null 2>&1 || true
+
+docker run -d --name "\$NEW_NAME" \
   -e DB_IP=sqlserver \
   -e DB_PORT=1433 \
   -e DB_NAME=SportStoreDb \
   -e DB_USERNAME=sa \
-  -e DB_PASSWORD=${SA_PWD} \
-  -e HTTP_PORT=80 \
-  -e HTTPS_PORT=443 \
+  -e DB_PASSWORD="\$SA_PWD" \
   -e ENVIRONMENT=Production \
-  -v "$CERT_DIR/app.crt":/app/certificate.pem:ro \
-  -v "$CERT_DIR/app.key":/app/certificate.key:ro \
   --network app-net \
   --restart=always \
   ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
 
-# ---- Wachten tot nieuwe container live is ----
-READY=0
-for i in $(seq 1 60); do
-  CODE=$(sudo docker run --rm --network app-net curlimages/curl:8.8.0 -sS -o /dev/null -w "%{http_code}" http://$APP_NAME:80/ || true)
-  if [ "$CODE" = "200" ] || [ "$CODE" = "302" ]; then READY=1; break; fi
+# --- Readiness: simpele curl tegen de nieuwe container ---
+for i in {1..60}; do
+  if docker run --rm --network app-net curlimages/curl:8.8.0 -fsS "http://\$NEW_NAME:80/" >/dev/null 2>&1; then
+    echo "New app is ready"
+    break
+  fi
+  echo "Waiting for new app (\$i/60)..."
   sleep 2
 done
-if [ "$READY" -ne 1 ]; then
-  echo "Nieuwe app ($APP_NAME) kwam niet online. Logs:"
-  sudo docker logs "$APP_NAME" | tail -n 200 || true
-  exit 1
-fi
 
-# ---- Switch edge naar nieuwe kleur ----
-cp "$EDGE_DIR/nginx.conf.$NEW_COLOR" "$EDGE_DIR/nginx.conf"
-sudo docker exec edge nginx -t
-sudo docker exec edge nginx -s reload || sudo docker restart edge
+# --- Switch Nginx upstream ---
+sed -i "s/server sportstore-.*:80;/server \$NEW_NAME:80;/" "\$NGINX_DIR/app.conf"
+docker exec sportstore-edge nginx -t
+docker exec sportstore-edge nginx -s reload
 
-# ---- Oude app opruimen ----
-sleep 5
-sudo docker rm -f "$OLD_APP" 2>/null || true
+echo "\$NEXT" > "\$ACTIVE_FILE"
+docker rm -f "\$OLD_NAME" >/dev/null 2>&1 || true
 
-sudo docker logout ghcr.io || true
+docker logout ghcr.io || true
 ENDSSH
 '''
         }
