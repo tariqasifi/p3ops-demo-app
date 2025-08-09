@@ -21,11 +21,6 @@ pipeline {
 
   triggers { githubPush() }
 
-  options {
-    timestamps()
-    ansiColor('xterm')
-  }
-
   stages {
     stage('Checkout')       { steps { checkout scm } }
 
@@ -165,7 +160,6 @@ NGX
 
 # EDGE: alleen aanmaken als hij nog niet bestaat; anders enkel reload (geen downtime)
 if ! docker ps -a --format '{{.Names}}' | grep -q '^sportstore-edge$'; then
-  # poging tot eerste start (kan falen als 80/443 door iets anders gebruikt worden)
   set +e
   docker run -d --name sportstore-edge \
     --network app-net \
@@ -177,17 +171,15 @@ if ! docker ps -a --format '{{.Names}}' | grep -q '^sportstore-edge$'; then
   rc=$?
   set -e
   if [ $rc -ne 0 ]; then
-    echo "ERROR: sportstore-edge kon niet starten. Waarschijnlijk houden andere services/containers poort 80/443 vast."
+    echo "ERROR: sportstore-edge kon niet starten. Poort 80/443 wordt vermoedelijk al gebruikt."
     echo "Los dit éénmalig op (stop oude publisher) en run de pipeline opnieuw."
     exit 1
   fi
 else
-  # bestaat al -> enkel reload (zero-downtime)
   if docker ps --format '{{.Names}}' | grep -q '^sportstore-edge$'; then
     docker exec sportstore-edge nginx -t
     docker exec sportstore-edge nginx -s reload || true
   else
-    # bestaat maar draait niet -> start zonder poorten te wisselen
     docker start sportstore-edge
     docker exec sportstore-edge nginx -t
     docker exec sportstore-edge nginx -s reload || true
@@ -352,7 +344,7 @@ else
   if $DOCKER ps --format '{{.Names}}' | grep -q '^sportstore-edge$'; then
     $DOCKER exec sportstore-edge nginx -t
     $DOCKER exec sportstore-edge nginx -s reload || true
-  else
+  } else {
     $DOCKER start sportstore-edge
     $DOCKER exec sportstore-edge nginx -t
     $DOCKER exec sportstore-edge nginx -s reload || true
