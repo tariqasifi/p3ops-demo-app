@@ -81,7 +81,7 @@ BASE_DIR="/opt/sportstore"
 CERT_DIR="\$BASE_DIR/certs"
 NGINX_DIR="\$BASE_DIR/nginx"
 ACTIVE_FILE="\$BASE_DIR/active_color"
-mkdir -p "\$BASE_DIR" "\$CERT_DIR" "\$NGINX_DIR"
+sudo mkdir -p "\$BASE_DIR" "\$CERT_DIR" "\$NGINX_DIR"
 
 # --- Docker login & network ---
 echo "\$GITHUB_TOKEN" | docker login ghcr.io -u tariqasifi --password-stdin
