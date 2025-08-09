@@ -4,6 +4,7 @@ pipeline {
   environment {
     REGISTRY               = 'ghcr.io'
     IMAGE_NAME             = 'tariqasifi/sportstore'
+    DOCKER_CONTENT_TRUST   = '0'   // voorkom signing prompts bij push
 
     // Lokaal
     APP_SERVER             = '192.168.30.20'
@@ -43,8 +44,8 @@ pipeline {
     stage('Generate Tag') {
       steps {
         script {
-          def date = new Date().format("yyyyMMdd-HHmmss", TimeZone.getTimeZone('Europe/Brussels'))
-          def branch = env.GIT_BRANCH?.replaceAll('origin/', '') ?: 'main'
+          def date   = new Date().format("yyyyMMdd-HHmmss", TimeZone.getTimeZone('Europe/Brussels'))
+          def branch = (env.BRANCH_NAME ?: (env.GIT_BRANCH?.replaceAll('^origin/','') ?: 'main'))
           env.IMAGE_TAG = "${branch}-${date}"
           echo "Generated image tag: ${env.IMAGE_TAG}"
         }
@@ -55,9 +56,9 @@ pipeline {
       steps {
         sh """
           docker build -t ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} -f src/Dockerfile .
-          docker push ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} --disable-content-trust=true
+          DOCKER_CONTENT_TRUST=0 docker push ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
           docker tag ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} ${REGISTRY}/${IMAGE_NAME}:latest
-          docker push ${REGISTRY}/${IMAGE_NAME}:latest --disable-content-trust=true
+          DOCKER_CONTENT_TRUST=0 docker push ${REGISTRY}/${IMAGE_NAME}:latest
         """
       }
     }
@@ -84,21 +85,20 @@ CERT_DIR="$BASE_DIR/certs"
 NGINX_DIR="$BASE_DIR/nginx"
 ACTIVE_FILE="$BASE_DIR/active_color"
 sudo mkdir -p "$BASE_DIR" "$CERT_DIR" "$NGINX_DIR"
-# Belangrijk: geef eigenaarschap aan huidige user (fix voor Permission denied)
 sudo chown -R $USER:$USER "$BASE_DIR"
 
-# --- Docker login & network ---
+# --- Login & network ---
 echo "$GITHUB_TOKEN" | docker login ghcr.io -u tariqasifi --password-stdin
 docker network inspect app-net >/dev/null 2>&1 || docker network create app-net
 
-# --- Certificaten voor Nginx (TLS termination) ---
+# --- Certificaten (self-signed) ---
 [ -f "$CERT_DIR/tls.key" ] || openssl genrsa -out "$CERT_DIR/tls.key" 2048
 if [ ! -f "$CERT_DIR/tls.crt" ]; then
   openssl req -x509 -new -nodes -key "$CERT_DIR/tls.key" -sha256 -days 365 -subj "/CN=localhost" -out "$CERT_DIR/tls.crt"
 fi
 chmod 600 "$CERT_DIR/tls.key" "$CERT_DIR/tls.crt" || true
 
-# --- SQL Server: start eenmaal, blijf draaien ---
+# --- SQL Server (éénmalig) ---
 if ! docker ps --format '{{.Names}}' | grep -q '^sqlserver$'; then
   if ! docker ps -a --format '{{.Names}}' | grep -q '^sqlserver$'; then
     docker run -d --name sqlserver \
@@ -113,8 +113,8 @@ if ! docker ps --format '{{.Names}}' | grep -q '^sqlserver$'; then
   fi
 fi
 
-# --- Nginx reverse proxy (host 80/443) ---
-# Genereer nginx.conf + app.conf indien ze ontbreken
+# --- Nginx reverse proxy (zero-downtime) ---
+# Genereer configs indien nodig
 if [ ! -f "$NGINX_DIR/nginx.conf" ]; then
   cat > "$NGINX_DIR/nginx.conf" <<'NGX'
 user  nginx;
@@ -162,9 +162,8 @@ server {
 NGX
 fi
 
-# Start Nginx container indien niet actief
-if ! docker ps --format '{{.Names}}' | grep -q '^sportstore-edge$'; then
-  docker rm -f sportstore-edge >/dev/null 2>&1 || true
+# Start edge ALLEEN als hij nog niet bestaat; anders running houden
+if ! docker ps -a --format '{{.Names}}' | grep -q '^sportstore-edge$'; then
   docker run -d --name sportstore-edge \
     --network app-net \
     -p 80:80 -p 443:443 \
@@ -174,37 +173,28 @@ if ! docker ps --format '{{.Names}}' | grep -q '^sportstore-edge$'; then
     --restart=always \
     nginx:1.25-alpine
 else
-  docker exec sportstore-edge nginx -t && docker exec sportstore-edge nginx -s reload || true
+  docker start sportstore-edge >/dev/null 2>&1 || true
 fi
 
-# --- Bepaal blue/green ---
-ACTIVE="blue"
-if [ -f "$ACTIVE_FILE" ]; then
-  ACTIVE="$(cat "$ACTIVE_FILE" || echo blue)"
-fi
-NEXT="green"
-[ "$ACTIVE" = "green" ] && NEXT="blue"
+# --- Blue/Green roll-out ---
+ACTIVE="blue"; [ -f "$ACTIVE_FILE" ] && ACTIVE="$(cat "$ACTIVE_FILE" || echo blue)"
+NEXT="green"; [ "$ACTIVE" = "green" ] && NEXT="blue"
 
-# --- Pull image (immutabele tag) ---
 docker pull ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
 
-# --- Start nieuwe (NEXT) app container ---
 NEW_NAME="sportstore-$NEXT"
 OLD_NAME="sportstore-$ACTIVE"
 docker rm -f "$NEW_NAME" >/dev/null 2>&1 || true
 
 docker run -d --name "$NEW_NAME" \
-  -e DB_IP=sqlserver \
-  -e DB_PORT=1433 \
-  -e DB_NAME=SportStoreDb \
-  -e DB_USERNAME=sa \
-  -e DB_PASSWORD="$SA_PWD" \
+  -e DB_IP=sqlserver -e DB_PORT=1433 \
+  -e DB_NAME=SportStoreDb -e DB_USERNAME=sa -e DB_PASSWORD="$SA_PWD" \
   -e ENVIRONMENT=Production \
   --network app-net \
   --restart=always \
   ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
 
-# --- Readiness check ---
+# Readiness check
 for i in {1..60}; do
   if docker run --rm --network app-net curlimages/curl:8.8.0 -fsS "http://$NEW_NAME:80/" >/dev/null 2>&1; then
     echo "New app is ready"
@@ -214,12 +204,11 @@ for i in {1..60}; do
   sleep 2
 done
 
-# --- Switch Nginx upstream ---
+# Upstream switch + reload (GEEN stop van edge)
 sed -i "s/server sportstore-.*:80;/server $NEW_NAME:80;/" "$NGINX_DIR/app.conf"
 docker exec sportstore-edge nginx -t
 docker exec sportstore-edge nginx -s reload
 
-# --- Markeer & opruimen ---
 echo "$NEXT" > "$ACTIVE_FILE"
 docker rm -f "$OLD_NAME" >/dev/null 2>&1 || true
 
@@ -246,19 +235,15 @@ ssh $SSH_OPTS ${CLOUD_USER}@${CLOUD_APP_SERVER} \
   "export GITHUB_TOKEN=${GITHUB_TOKEN}; export REGISTRY=${REGISTRY}; export IMAGE_NAME=${IMAGE_NAME}; export IMAGE_TAG=${IMAGE_TAG}; export SA_PWD='${SA_PWD}'; bash -s" << 'ENDSSH'
 set -euo pipefail
 
-# --- Vereiste packages / docker ---
+# --- Docker installatie ---
 if ! command -v docker >/dev/null 2>&1; then
   curl -fsSL https://get.docker.com | sh
   sudo systemctl enable --now docker
 fi
-if ! docker run --rm hello-world >/dev/null 2>&1; then
-  sudo usermod -aG docker $USER || true
-fi
-
-# Gebruik sudo consistent op cloud
+sudo usermod -aG docker $USER || true
 alias docker='sudo docker'
 
-# --- Vars & dirs ---
+# --- Dirs/rights ---
 BASE_DIR="/opt/sportstore"
 CERT_DIR="$BASE_DIR/certs"
 NGINX_DIR="$BASE_DIR/nginx"
@@ -266,11 +251,11 @@ ACTIVE_FILE="$BASE_DIR/active_color"
 sudo mkdir -p "$BASE_DIR" "$CERT_DIR" "$NGINX_DIR"
 sudo chown -R $USER:$USER "$BASE_DIR"
 
-# --- Docker login & network ---
+# --- Login & network ---
 echo "$GITHUB_TOKEN" | docker login ghcr.io -u tariqasifi --password-stdin
 docker network inspect app-net >/dev/null 2>&1 || docker network create app-net
 
-# --- Certificaten voor Nginx ---
+# --- Certs ---
 [ -f "$CERT_DIR/tls.key" ] || openssl genrsa -out "$CERT_DIR/tls.key" 2048
 if [ ! -f "$CERT_DIR/tls.crt" ]; then
   openssl req -x509 -new -nodes -key "$CERT_DIR/tls.key" -sha256 -days 365 -subj "/CN=localhost" -out "$CERT_DIR/tls.crt"
@@ -292,7 +277,7 @@ if ! docker ps --format '{{.Names}}' | grep -q '^sqlserver$'; then
   fi
 fi
 
-# --- Nginx reverse proxy ---
+# --- Nginx reverse proxy (zero-downtime) ---
 if [ ! -f "$NGINX_DIR/nginx.conf" ]; then
   cat > "$NGINX_DIR/nginx.conf" <<'NGX'
 user  nginx;
@@ -340,8 +325,8 @@ server {
 NGX
 fi
 
-if ! docker ps --format '{{.Names}}' | grep -q '^sportstore-edge$'; then
-  docker rm -f sportstore-edge >/dev/null 2>&1 || true
+# Start edge ALLEEN als hij nog niet bestaat; anders running houden
+if ! docker ps -a --format '{{.Names}}' | grep -q '^sportstore-edge$'; then
   docker run -d --name sportstore-edge \
     --network app-net \
     -p 80:80 -p 443:443 \
@@ -351,16 +336,12 @@ if ! docker ps --format '{{.Names}}' | grep -q '^sportstore-edge$'; then
     --restart=always \
     nginx:1.25-alpine
 else
-  docker exec sportstore-edge nginx -t && docker exec sportstore-edge nginx -s reload || true
+  docker start sportstore-edge >/dev/null 2>&1 || true
 fi
 
-# --- Blue/Green switch ---
-ACTIVE="blue"
-if [ -f "$ACTIVE_FILE" ]; then
-  ACTIVE="$(cat "$ACTIVE_FILE" || echo blue)"
-fi
-NEXT="green"
-[ "$ACTIVE" = "green" ] && NEXT="blue"
+# --- Blue/Green ---
+ACTIVE="blue"; [ -f "$ACTIVE_FILE" ] && ACTIVE="$(cat "$ACTIVE_FILE" || echo blue)"
+NEXT="green"; [ "$ACTIVE" = "green" ] && NEXT="blue"
 
 docker pull ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
 
@@ -369,16 +350,14 @@ OLD_NAME="sportstore-$ACTIVE"
 docker rm -f "$NEW_NAME" >/dev/null 2>&1 || true
 
 docker run -d --name "$NEW_NAME" \
-  -e DB_IP=sqlserver \
-  -e DB_PORT=1433 \
-  -e DB_NAME=SportStoreDb \
-  -e DB_USERNAME=sa \
-  -e DB_PASSWORD="$SA_PWD" \
+  -e DB_IP=sqlserver -e DB_PORT=1433 \
+  -e DB_NAME=SportStoreDb -e DB_USERNAME=sa -e DB_PASSWORD="$SA_PWD" \
   -e ENVIRONMENT=Production \
   --network app-net \
   --restart=always \
   ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
 
+# Readiness
 for i in {1..60}; do
   if docker run --rm --network app-net curlimages/curl:8.8.0 -fsS "http://$NEW_NAME:80/" >/dev/null 2>&1; then
     echo "New app is ready"
@@ -388,6 +367,7 @@ for i in {1..60}; do
   sleep 2
 done
 
+# Upstream switch + reload
 sed -i "s/server sportstore-.*:80;/server $NEW_NAME:80;/" "$NGINX_DIR/app.conf"
 docker exec sportstore-edge nginx -t
 docker exec sportstore-edge nginx -s reload
