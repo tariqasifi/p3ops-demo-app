@@ -1,4 +1,3 @@
-lees de log en verbeter de onderstande jenkins:
 pipeline {
   agent any
 
