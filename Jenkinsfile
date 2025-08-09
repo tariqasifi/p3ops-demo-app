@@ -15,7 +15,7 @@ pipeline {
     CLOUD_USER             = 'azureuser'
     CLOUD_SSH_CREDENTIALS  = 'ssh-azure-appserver'
   }
-
+//
   triggers { githubPush() }
 
   stages {
