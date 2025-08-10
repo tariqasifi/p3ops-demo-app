@@ -25,12 +25,11 @@ pipeline {
 
     stage('Test') {
       steps {
-        // Gebruik bash zodat pipefail werkt
-        sh(script: '''
-          set -euo pipefail
-          dotnet restore tests/Domain.Tests/Domain.Tests.csproj
-          dotnet test tests/Domain.Tests/Domain.Tests.csproj --configuration Release --no-build
-        ''', shell: '/bin/bash')
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+dotnet restore tests/Domain.Tests/Domain.Tests.csproj
+dotnet test tests/Domain.Tests/Domain.Tests.csproj --configuration Release --no-build
+'''
       }
     }
 
@@ -55,14 +54,13 @@ pipeline {
 
     stage('Docker Build & Push') {
       steps {
-        // Ook hier bash gebruiken
-        sh(script: """
-          set -euo pipefail
-          docker build -t ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} -f src/Dockerfile .
-          docker push ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} --disable-content-trust=true
-          docker tag ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} ${REGISTRY}/${IMAGE_NAME}:latest
-          docker push ${REGISTRY}/${IMAGE_NAME}:latest --disable-content-trust=true
-        """, shell: '/bin/bash')
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+docker build -t ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} -f src/Dockerfile .
+docker push ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} --disable-content-trust=true
+docker tag ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} ${REGISTRY}/${IMAGE_NAME}:latest
+docker push ${REGISTRY}/${IMAGE_NAME}:latest --disable-content-trust=true
+'''
       }
     }
 
@@ -199,15 +197,10 @@ else
   docker exec sportstore-edge nginx -t && docker exec sportstore-edge nginx -s reload || true
 fi
 
-# --- Bepaal blue/green ---
-ACTIVE="blue"
-if [ -f "$ACTIVE_FILE" ]; then
-  ACTIVE="$(cat "$ACTIVE_FILE" || echo blue)"
-fi
-NEXT="green"
-[ "$ACTIVE" = "green" ] && NEXT="blue"
+# --- Blue/Green ---
+ACTIVE="blue"; [ -f "$ACTIVE_FILE" ] && ACTIVE="$(cat "$ACTIVE_FILE" || echo blue)"
+NEXT="green";  [ "$ACTIVE" = "green" ] && NEXT="blue"
 
-# Pull nieuwe image en start NEXT
 docker pull ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
 
 NEW_NAME="sportstore-$NEXT"
@@ -228,11 +221,9 @@ docker run -d --name "$NEW_NAME" \
 # Readiness check
 for i in {1..60}; do
   if docker run --rm --network app-net curlimages/curl:8.8.0 -fsS "http://$NEW_NAME:80/" >/dev/null 2>&1; then
-    echo "New app is ready"
-    break
+    echo "New app is ready"; break
   fi
-  echo "Waiting for new app ($i/60)..."
-  sleep 2
+  echo "Waiting for new app ($i/60)..."; sleep 2
 done
 
 # Switch Nginx upstream
@@ -267,7 +258,7 @@ ssh $SSH_OPTS ${CLOUD_USER}@${CLOUD_APP_SERVER} \
   "export GITHUB_TOKEN=${GITHUB_TOKEN}; export REGISTRY=${REGISTRY}; export IMAGE_NAME=${IMAGE_NAME}; export IMAGE_TAG=${IMAGE_TAG}; export SA_PWD='${SA_PWD}'; bash -s" << 'ENDSSH'
 set -euo pipefail
 
-# --- Vereiste packages / docker ---
+# --- Docker installeren indien nodig ---
 if ! command -v docker >/dev/null 2>&1; then
   curl -fsSL https://get.docker.com | sh
   sudo systemctl enable --now docker
@@ -396,19 +387,15 @@ else
   docker exec sportstore-edge nginx -t && docker exec sportstore-edge nginx -s reload || true
 fi
 
-# --- Blue/Green switch ---
-ACTIVE="blue"
-if [ -f "$ACTIVE_FILE" ]; then
-  ACTIVE="$(cat "$ACTIVE_FILE" || echo blue)"
-fi
-NEXT="green"
-[ "$ACTIVE" = "green" ] && NEXT="blue"
+# --- Blue/Green ---
+ACTIVE="blue"; [ -f "$ACTIVE_FILE" ] && ACTIVE="$(cat "$ACTIVE_FILE" || echo blue)"
+NEXT="green";  [ "$ACTIVE" = "green" ] && NEXT="blue"
 
 docker pull ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
 
 NEW_NAME="sportstore-$NEXT"
 OLD_NAME="sportstore-$ACTIVE"
-docker rm -f "$NEW_NAME" >/devnull 2>&1 || true
+docker rm -f "$NEW_NAME" >/dev/null 2>&1 || true
 
 docker run -d --name "$NEW_NAME" \
   -e DB_IP=sqlserver \
@@ -421,13 +408,12 @@ docker run -d --name "$NEW_NAME" \
   --restart=always \
   ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
 
+# Readiness check
 for i in {1..60}; do
   if docker run --rm --network app-net curlimages/curl:8.8.0 -fsS "http://$NEW_NAME:80/" >/dev/null 2>&1; then
-    echo "New app is ready"
-    break
+    echo "New app is ready"; break
   fi
-  echo "Waiting for new app ($i/60)..."
-  sleep 2
+  echo "Waiting for new app ($i/60)..."; sleep 2
 done
 
 sed -i "s/server sportstore-.*:80;/server $NEW_NAME:80;/" "$NGINX_DIR/app.conf"
