@@ -133,7 +133,6 @@ for P in 80 443; do
     HOSTBINDS=$(docker inspect -f '{{range $k,$v := .NetworkSettings.Ports}}{{if $v}}{{range $v}}{{.HostIp}}:{{.HostPort}} {{end}}{{end}}{{end}}' "$CID")
     if echo "$HOSTBINDS" | grep -qE "(^| )0\\.0\\.0\\.0:${P}|(^| ):::${P}"; then
       if [ "$NAME" != "sportstore-edge" ]; then
-        echo "Port $P in gebruik door $NAME ($CID) – stop/verwijder..."
         docker stop "$CID" >/dev/null 2>&1 || true
         docker rm "$CID"   >/dev/null 2>&1 || true
       fi
@@ -189,19 +188,11 @@ server {
 NGX
 fi
 
-# (Nieuw) Zorg dat app.conf naar een lopende kleur wijst vóór reloads
+# Self-heal app.conf naar lopende kleur (voorkomt 'host not found')
 RUNNING_TARGET=""
-if docker ps --format '{{.Names}}' | grep -q '^sportstore-blue$'; then RUNNING_TARGET="sportstore-blue"; fi
-if docker ps --format '{{.Names}}' | grep -q '^sportstore-green$'; then
-  if [ -n "$RUNNING_TARGET" ] && [ -f "$ACTIVE_FILE" ] && [ "$(cat "$ACTIVE_FILE" 2>/dev/null)" = "green" ]; then
-    RUNNING_TARGET="sportstore-green"
-  elif [ -z "$RUNNING_TARGET" ]; then
-    RUNNING_TARGET="sportstore-green"
-  fi
-fi
-if [ -n "$RUNNING_TARGET" ] && [ -f "$NGINX_DIR/app.conf" ]; then
-  sed -i -E "s/server sportstore-[a-z]+:[0-9]+;/server ${RUNNING_TARGET}:80;/" "$NGINX_DIR/app.conf"
-fi
+docker ps --format '{{.Names}}' | grep -q '^sportstore-blue$'  && RUNNING_TARGET="sportstore-blue"
+docker ps --format '{{.Names}}' | grep -q '^sportstore-green$' && RUNNING_TARGET="${RUNNING_TARGET:-sportstore-green}"
+[ -n "$RUNNING_TARGET" ] && sed -i -E "s/server sportstore-[a-z]+:[0-9]+;/server ${RUNNING_TARGET}:80;/" "$NGINX_DIR/app.conf" || true
 
 # Start of herlaad edge-proxy
 if ! docker ps --format '{{.Names}}' | grep -q '^sportstore-edge$'; then
@@ -229,20 +220,19 @@ NEW_NAME="sportstore-$NEXT"
 OLD_NAME="sportstore-$ACTIVE"
 docker rm -f "$NEW_NAME" >/dev/null 2>&1 || true
 
-# Forceer .NET naar poort 80 (belangrijk!)
+# ---- OVERRIDE ENTRYPOINT: start direct dotnet, geen migrations ----
 docker run -d --name "$NEW_NAME" \
+  --entrypoint /bin/sh \
   -e ASPNETCORE_URLS=http://+:80 \
-  -e DB_IP=sqlserver \
-  -e DB_PORT=1433 \
-  -e DB_NAME=SportStoreDb \
-  -e DB_USERNAME=sa \
-  -e DB_PASSWORD="$SA_PWD" \
   -e ENVIRONMENT=Production \
+  -e ConnectionStrings__SqlDatabase="Server=sqlserver,1433;Database=SportStoreDb;User Id=sa;Password=$SA_PWD;Encrypt=True;TrustServerCertificate=True;" \
+  -e DB_IP=sqlserver -e DB_PORT=1433 -e DB_NAME=SportStoreDb -e DB_USERNAME=sa -e DB_PASSWORD="$SA_PWD" \
   --network app-net \
   --restart=always \
-  ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+  ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} \
+  -c 'set -eu; for p in /app/Server.dll /app/Server/Server.dll /app/publish/Server.dll; do [ -f "$p" ] && exec dotnet "$p"; done; echo "ERROR: Server.dll not found in /app{,/Server,/publish}" >&2; ls -R /app || true; exit 1'
 
-# --- Readiness check; alleen switchen als READY ---
+# --- Readiness ---
 READY=false
 for i in {1..60}; do
   if docker run --rm --network app-net curlimages/curl:8.8.0 -fsS "http://$NEW_NAME:80/" >/dev/null 2>&1; then
@@ -256,7 +246,7 @@ if [ "$READY" != "true" ]; then
   exit 1
 fi
 
-# Switch Nginx upstream en reload
+# Switch & reload
 sed -i -E "s/server sportstore-[a-z]+:[0-9]+;/server ${NEW_NAME}:80;/" "$NGINX_DIR/app.conf"
 docker exec sportstore-edge nginx -t
 docker exec sportstore-edge nginx -s reload
@@ -288,14 +278,13 @@ ssh $SSH_OPTS ${CLOUD_USER}@${CLOUD_APP_SERVER} \
   "export GITHUB_TOKEN=${GITHUB_TOKEN}; export REGISTRY=${REGISTRY}; export IMAGE_NAME=${IMAGE_NAME}; export IMAGE_TAG=${IMAGE_TAG}; export SA_PWD='${SA_PWD}'; bash -s" << 'ENDSSH'
 set -euo pipefail
 
-# --- Docker installeren indien nodig ---
+# --- Docker indien nodig ---
 if ! command -v docker >/dev/null 2>&1; then
   curl -fsSL https://get.docker.com | sh
   sudo systemctl enable --now docker
 fi
-if ! docker run --rm hello-world >/dev/null 2>&1; then
-  sudo usermod -aG docker $USER || true
-fi
+
+# Gebruik sudo consequent
 alias docker='sudo docker'
 
 # --- Vars & dirs ---
@@ -310,7 +299,7 @@ sudo chown -R $USER:$USER "$BASE_DIR"
 echo "$GITHUB_TOKEN" | docker login ghcr.io -u tariqasifi --password-stdin
 docker network inspect app-net >/dev/null 2>&1 || docker network create app-net
 
-# --- Certificaten voor Nginx ---
+# --- Certs ---
 [ -f "$CERT_DIR/tls.key" ] || openssl genrsa -out "$CERT_DIR/tls.key" 2048
 if [ ! -f "$CERT_DIR/tls.crt" ]; then
   openssl req -x509 -new -nodes -key "$CERT_DIR/tls.key" -sha256 -days 365 -subj "/CN=localhost" -out "$CERT_DIR/tls.crt"
@@ -333,8 +322,6 @@ if ! docker ps --format '{{.Names}}' | grep -q '^sqlserver$'; then
 fi
 
 # --- Nginx reverse proxy (host 80/443) ---
-
-# Stop/disable host nginx/apache2 alleen als aanwezig
 if systemctl list-unit-files | grep -q '^nginx\\.service'; then
   systemctl is-active --quiet nginx && sudo systemctl stop nginx || true
   systemctl is-enabled --quiet nginx && sudo systemctl disable nginx || true
@@ -344,14 +331,12 @@ if systemctl list-unit-files | grep -q '^apache2\\.service'; then
   systemctl is-enabled --quiet apache2 && sudo systemctl disable apache2 || true
 fi
 
-# Opruimen containers die hostpoort 80/443 claimen (behalve sportstore-edge)
 for P in 80 443; do
   for CID in $(docker ps -q); do
     NAME=$(docker inspect -f '{{.Name}}' "$CID" | sed 's#^/##')
     HOSTBINDS=$(docker inspect -f '{{range $k,$v := .NetworkSettings.Ports}}{{if $v}}{{range $v}}{{.HostIp}}:{{.HostPort}} {{end}}{{end}}{{end}}' "$CID")
     if echo "$HOSTBINDS" | grep -qE "(^| )0\\.0\\.0\\.0:${P}|(^| ):::${P}"; then
       if [ "$NAME" != "sportstore-edge" ]; then
-        echo "Port $P in gebruik door $NAME ($CID) – stop/verwijder..."
         docker stop "$CID" >/dev/null 2>&1 || true
         docker rm "$CID"   >/dev/null 2>&1 || true
       fi
@@ -407,19 +392,11 @@ server {
 NGX
 fi
 
-# (Nieuw) self-heal app.conf naar lopende kleur
+# Self-heal app.conf
 RUNNING_TARGET=""
-if docker ps --format '{{.Names}}' | grep -q '^sportstore-blue$'; then RUNNING_TARGET="sportstore-blue"; fi
-if docker ps --format '{{.Names}}' | grep -q '^sportstore-green$'; then
-  if [ -n "$RUNNING_TARGET" ] && [ -f "$ACTIVE_FILE" ] && [ "$(cat "$ACTIVE_FILE" 2>/dev/null)" = "green" ]; then
-    RUNNING_TARGET="sportstore-green"
-  elif [ -z "$RUNNING_TARGET" ]; then
-    RUNNING_TARGET="sportstore-green"
-  fi
-fi
-if [ -n "$RUNNING_TARGET" ] && [ -f "$NGINX_DIR/app.conf" ]; then
-  sed -i -E "s/server sportstore-[a-z]+:[0-9]+;/server ${RUNNING_TARGET}:80;/" "$NGINX_DIR/app.conf"
-fi
+docker ps --format '{{.Names}}' | grep -q '^sportstore-blue$'  && RUNNING_TARGET="sportstore-blue"
+docker ps --format '{{.Names}}' | grep -q '^sportstore-green$' && RUNNING_TARGET="${RUNNING_TARGET:-sportstore-green}"
+[ -n "$RUNNING_TARGET" ] && sed -i -E "s/server sportstore-[a-z]+:[0-9]+;/server ${RUNNING_TARGET}:80;/" "$NGINX_DIR/app.conf" || true
 
 # Start of herlaad edge-proxy
 if ! docker ps --format '{{.Names}}' | grep -q '^sportstore-edge$'; then
@@ -447,20 +424,19 @@ NEW_NAME="sportstore-$NEXT"
 OLD_NAME="sportstore-$ACTIVE"
 docker rm -f "$NEW_NAME" >/dev/null 2>&1 || true
 
-# Forceer .NET naar poort 80
+# ---- OVERRIDE ENTRYPOINT ook in cloud ----
 docker run -d --name "$NEW_NAME" \
+  --entrypoint /bin/sh \
   -e ASPNETCORE_URLS=http://+:80 \
-  -e DB_IP=sqlserver \
-  -e DB_PORT=1433 \
-  -e DB_NAME=SportStoreDb \
-  -e DB_USERNAME=sa \
-  -e DB_PASSWORD="$SA_PWD" \
   -e ENVIRONMENT=Production \
+  -e ConnectionStrings__SqlDatabase="Server=sqlserver,1433;Database=SportStoreDb;User Id=sa;Password=$SA_PWD;Encrypt=True;TrustServerCertificate=True;" \
+  -e DB_IP=sqlserver -e DB_PORT=1433 -e DB_NAME=SportStoreDb -e DB_USERNAME=sa -e DB_PASSWORD="$SA_PWD" \
   --network app-net \
   --restart=always \
-  ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
+  ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} \
+  -c 'set -eu; for p in /app/Server.dll /app/Server/Server.dll /app/publish/Server.dll; do [ -f "$p" ] && exec dotnet "$p"; done; echo "ERROR: Server.dll not found in /app{,/Server,/publish}" >&2; ls -R /app || true; exit 1'
 
-# --- Readiness ---
+# Readiness
 READY=false
 for i in {1..60}; do
   if docker run --rm --network app-net curlimages/curl:8.8.0 -fsS "http://$NEW_NAME:80/" >/dev/null 2>&1; then
@@ -474,12 +450,10 @@ if [ "$READY" != "true" ]; then
   exit 1
 fi
 
-# Switch & reload
 sed -i -E "s/server sportstore-[a-z]+:[0-9]+;/server ${NEW_NAME}:80;/" "$NGINX_DIR/app.conf"
 docker exec sportstore-edge nginx -t
 docker exec sportstore-edge nginx -s reload
 
-# Markeer & opruimen
 echo "$NEXT" > "$ACTIVE_FILE"
 docker rm -f "$OLD_NAME" >/dev/null 2>&1 || true
 
