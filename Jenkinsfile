@@ -90,14 +90,14 @@ sudo chown -R $USER:$USER "$BASE_DIR"
 echo "$GITHUB_TOKEN" | docker login ghcr.io -u tariqasifi --password-stdin
 docker network inspect app-net >/dev/null 2>&1 || docker network create app-net
 
-# Certs (self-signed)
+# --- Certs ---
 [ -f "$CERT_DIR/tls.key" ] || openssl genrsa -out "$CERT_DIR/tls.key" 2048
 if [ ! -f "$CERT_DIR/tls.crt" ]; then
   openssl req -x509 -new -nodes -key "$CERT_DIR/tls.key" -sha256 -days 365 -subj "/CN=localhost" -out "$CERT_DIR/tls.crt"
 fi
 chmod 600 "$CERT_DIR/tls.key" "$CERT_DIR/tls.crt" || true
 
-# SQL Server persistent
+# --- SQL Server persistent ---
 if ! docker ps --format '{{.Names}}' | grep -q '^sqlserver$'; then
   if ! docker ps -a --format '{{.Names}}' | grep -q '^sqlserver$'; then
     docker run -d --name sqlserver \
@@ -107,17 +107,7 @@ if ! docker ps --format '{{.Names}}' | grep -q '^sqlserver$'; then
   else docker start sqlserver; fi
 fi
 
-# Stop/disable host nginx/apache2 indien aanwezig
-if systemctl list-unit-files | grep -q '^nginx\\.service'; then
-  systemctl is-active --quiet nginx && sudo systemctl stop nginx || true
-  systemctl is-enabled --quiet nginx && sudo systemctl disable nginx || true
-fi
-if systemctl list-unit-files | grep -q '^apache2\\.service'; then
-  systemctl is-active --quiet apache2 && sudo systemctl stop apache2 || true
-  systemctl is-enabled --quiet apache2 && sudo systemctl disable apache2 || true
-fi
-
-# Free host ports 80/443 (behalve edge)
+# --- Free host ports 80/443 (behalve edge) ---
 for P in 80 443; do
   for CID in $(docker ps -q); do
     NAME=$(docker inspect -f '{{.Name}}' "$CID" | sed 's#^/##')
@@ -128,7 +118,7 @@ for P in 80 443; do
   done
 done
 
-# Genereer Nginx config indien nodig
+# --- Genereer Nginx config indien nodig ---
 [ -f "$NGINX_DIR/nginx.conf" ] || cat > "$NGINX_DIR/nginx.conf" <<'NGX'
 user  nginx;
 worker_processes  auto;
@@ -168,15 +158,15 @@ server {
 }
 NGX
 
-# --- Self-heal vóór deploy: zet upstream op een draaiende kleur ---
+# --- Self-heal vóór deploy: zet upstream op de draaiende kleur ---
 RUNNING_TARGET=""
 docker ps --format '{{.Names}}' | grep -q '^sportstore-blue$'  && RUNNING_TARGET="sportstore-blue"
 docker ps --format '{{.Names}}' | grep -q '^sportstore-green$' && RUNNING_TARGET="${RUNNING_TARGET:-sportstore-green}"
 if [ -n "$RUNNING_TARGET" ]; then
-  sed -i -E "s/server sportstore-[a-z]+:80;/server ${RUNNING_TARGET}:80;/" "$NGINX_DIR/app.conf" || true
+  sudo sed -i -E "s/server sportstore-[a-z]+:80;/server ${RUNNING_TARGET}:80;/" "$NGINX_DIR/app.conf" || true
 fi
 
-# (Re)create edge met read-only mounts zodat we enkel hostfile aanpassen
+# --- (Re)create edge met read-only mounts (pakt hostfile vers op) ---
 docker rm -f sportstore-edge >/dev/null 2>&1 || true
 docker run -d --name sportstore-edge \
   --network app-net -p 80:80 -p 443:443 \
@@ -185,7 +175,7 @@ docker run -d --name sportstore-edge \
   -v "$CERT_DIR":/etc/nginx/certs:ro \
   --restart=always nginx:1.25-alpine
 
-# Bepaal actieve kleur & NEXT
+# --- Blue/Green ---
 ACTIVE="blue"; [ -f "$ACTIVE_FILE" ] && ACTIVE="$(cat "$ACTIVE_FILE" || echo blue)"
 NEXT="green";  [ "$ACTIVE" = "green" ] && NEXT="blue"
 
@@ -195,7 +185,7 @@ NEW_NAME="sportstore-$NEXT"
 OLD_NAME="sportstore-$ACTIVE"
 docker rm -f "$NEW_NAME" >/dev/null 2>&1 || true
 
-# Start app zonder migrations (entrypoint override)
+# --- Start app ZONDER migrations (entrypoint override) ---
 docker run -d --name "$NEW_NAME" \
   --entrypoint /bin/sh \
   -e ASPNETCORE_URLS=http://+:80 \
@@ -206,7 +196,7 @@ docker run -d --name "$NEW_NAME" \
   ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} \
   -c 'set -eu; for p in /app/Server.dll /app/Server/Server.dll /app/publish/Server.dll; do [ -f "$p" ] && exec dotnet "$p"; done; echo "Server.dll not found"; ls -R /app || true; exit 1'
 
-# Wacht tot nieuwe app klaar is
+# --- Readiness ---
 READY=false
 for i in {1..60}; do
   if docker run --rm --network app-net curlimages/curl:8.8.0 -fsS "http://$NEW_NAME:80/" >/dev/null 2>&1; then READY=true; break; fi
@@ -216,15 +206,21 @@ if [ "$READY" != "true" ]; then
   echo "ERROR: new app not ready"; docker logs --tail=200 "$NEW_NAME" || true; exit 1
 fi
 
-# Switch: pas host app.conf aan op NEW_NAME en reload edge
-sed -i -E "s/server sportstore-[a-z]+:80;/server ${NEW_NAME}:80;/" "$NGINX_DIR/app.conf"
-docker exec sportstore-edge nginx -t && docker exec sportstore-edge nginx -s reload
+# --- Switch: update host app.conf naar NEW_NAME, recreate edge zodat mount zeker ververst ---
+sudo sed -i -E "s/server sportstore-[a-z]+:80;/server ${NEW_NAME}:80;/" "$NGINX_DIR/app.conf"
+docker rm -f sportstore-edge >/dev/null 2>&1 || true
+docker run -d --name sportstore-edge \
+  --network app-net -p 80:80 -p 443:443 \
+  -v "$NGINX_DIR/nginx.conf":/etc/nginx/nginx.conf:ro \
+  -v "$NGINX_DIR/app.conf":/etc/nginx/conf.d/app.conf:ro \
+  -v "$CERT_DIR":/etc/nginx/certs:ro \
+  --restart=always nginx:1.25-alpine
 
-# E2E check via edge
+# --- E2E check via edge ---
 docker run --rm --network app-net curlimages/curl:8.8.0 -fsS "http://sportstore-edge:80/" >/dev/null \
-  || { echo "Edge proxy not routing to app"; docker exec sportstore-edge nginx -T || true; exit 1; }
+  || { echo "Edge proxy not routing to app"; exit 1; }
 
-# Markeer & opruimen
+# --- Markeer & opruimen ---
 echo "$NEXT" > "$ACTIVE_FILE"
 docker rm -f "$OLD_NAME" >/dev/null 2>&1 || true
 
@@ -251,7 +247,6 @@ ssh $SSH_OPTS ${CLOUD_USER}@${CLOUD_APP_SERVER} \
   "export GITHUB_TOKEN=${GITHUB_TOKEN}; export REGISTRY=${REGISTRY}; export IMAGE_NAME=${IMAGE_NAME}; export IMAGE_TAG=${IMAGE_TAG}; export SA_PWD='${SA_PWD}'; bash -s" << 'ENDSSH'
 set -euo pipefail
 
-# Docker (indien nodig)
 if ! command -v docker >/dev/null 2>&1; then
   curl -fsSL https://get.docker.com | sh
   sudo systemctl enable --now docker
@@ -285,7 +280,7 @@ if ! docker ps --format '{{.Names}}' | grep -q '^sqlserver$'; then
   else docker start sqlserver; fi
 fi
 
-# Genereer Nginx config indien nodig
+# Genereer nginx config indien nodig
 [ -f "$NGINX_DIR/nginx.conf" ] || cat > "$NGINX_DIR/nginx.conf" <<'NGX'
 user  nginx;
 worker_processes  auto;
@@ -329,9 +324,9 @@ NGX
 RUNNING_TARGET=""
 docker ps --format '{{.Names}}' | grep -q '^sportstore-blue$'  && RUNNING_TARGET="sportstore-blue"
 docker ps --format '{{.Names}}' | grep -q '^sportstore-green$' && RUNNING_TARGET="${RUNNING_TARGET:-sportstore-green}"
-[ -n "$RUNNING_TARGET" ] && sed -i -E "s/server sportstore-[a-z]+:80;/server ${RUNNING_TARGET}:80;/" "$NGINX_DIR/app.conf" || true
+[ -n "$RUNNING_TARGET" ] && sudo sed -i -E "s/server sportstore-[a-z]+:80;/server ${RUNNING_TARGET}:80;/" "$NGINX_DIR/app.conf" || true
 
-# Recreate edge met read-only mounts
+# Recreate edge (read-only mounts)
 docker rm -f sportstore-edge >/dev/null 2>&1 || true
 docker run -d --name sportstore-edge \
   --network app-net -p 80:80 -p 443:443 \
@@ -369,11 +364,17 @@ if [ "$READY" != "true" ]; then
   echo "ERROR: new app not ready"; docker logs --tail=200 "$NEW_NAME" || true; exit 1
 fi
 
-sed -i -E "s/server sportstore-[a-z]+:80;/server ${NEW_NAME}:80;/" "$NGINX_DIR/app.conf"
-docker exec sportstore-edge nginx -t && docker exec sportstore-edge nginx -s reload
+sudo sed -i -E "s/server sportstore-[a-z]+:80;/server ${NEW_NAME}:80;/" "$NGINX_DIR/app.conf"
+docker rm -f sportstore-edge >/dev/null 2>&1 || true
+docker run -d --name sportstore-edge \
+  --network app-net -p 80:80 -p 443:443 \
+  -v "$NGINX_DIR/nginx.conf":/etc/nginx/nginx.conf:ro \
+  -v "$NGINX_DIR/app.conf":/etc/nginx/conf.d/app.conf:ro \
+  -v "$CERT_DIR":/etc/nginx/certs:ro \
+  --restart=always nginx:1.25-alpine
 
 docker run --rm --network app-net curlimages/curl:8.8.0 -fsS "http://sportstore-edge:80/" >/dev/null \
-  || { echo "Edge proxy not routing to app"; docker exec sportstore-edge nginx -T || true; exit 1; }
+  || { echo "Edge proxy not routing to app"; exit 1; }
 
 echo "$NEXT" > "$ACTIVE_FILE"
 docker rm -f "$OLD_NAME" >/dev/null 2>&1 || true
