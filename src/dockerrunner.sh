@@ -1,3 +1,7 @@
+#Opmerking: Deze code is gebaseerd op de code uit het eerste project/zit en aangepast voor dit project.
+
+
+
 #!/bin/bash
 # Stop bij fouten of oningevulde variabelen, en log elke stap (handig voor debuggen)
 set -euo pipefail
