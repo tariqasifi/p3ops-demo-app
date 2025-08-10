@@ -25,11 +25,12 @@ pipeline {
 
     stage('Test') {
       steps {
-        sh '''
-          set -euxo pipefail
+        // Gebruik bash zodat pipefail werkt
+        sh(script: '''
+          set -euo pipefail
           dotnet restore tests/Domain.Tests/Domain.Tests.csproj
           dotnet test tests/Domain.Tests/Domain.Tests.csproj --configuration Release --no-build
-        '''
+        ''', shell: '/bin/bash')
       }
     }
 
@@ -54,13 +55,14 @@ pipeline {
 
     stage('Docker Build & Push') {
       steps {
-        sh """
-          set -euxo pipefail
+        // Ook hier bash gebruiken
+        sh(script: """
+          set -euo pipefail
           docker build -t ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} -f src/Dockerfile .
           docker push ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} --disable-content-trust=true
           docker tag ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} ${REGISTRY}/${IMAGE_NAME}:latest
           docker push ${REGISTRY}/${IMAGE_NAME}:latest --disable-content-trust=true
-        """
+        """, shell: '/bin/bash')
       }
     }
 
@@ -72,7 +74,7 @@ pipeline {
       }
       steps {
         sshagent(credentials: ["${SSH_CREDENTIALS}"]) {
-          sh '''#!/bin/bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 SSH_OPTS="-o StrictHostKeyChecking=no"
 
@@ -116,7 +118,7 @@ fi
 
 # --- Nginx reverse proxy (host 80/443) ---
 
-# Zorg dat host-services die 80/443 gebruiken uit staan
+# Host-services die 80/443 gebruiken uitschakelen
 sudo systemctl stop nginx || true
 sudo systemctl disable nginx || true
 sudo systemctl stop apache2 || true
@@ -134,7 +136,7 @@ for P in 80 443; do
   done
 done
 
-# Genereer nginx.conf + app.conf indien ze ontbreken
+# Config genereren indien nodig
 if [ ! -f "$NGINX_DIR/nginx.conf" ]; then
   cat > "$NGINX_DIR/nginx.conf" <<'NGX'
 user  nginx;
@@ -205,10 +207,9 @@ fi
 NEXT="green"
 [ "$ACTIVE" = "green" ] && NEXT="blue"
 
-# --- Pull image (immutabele tag) ---
+# Pull nieuwe image en start NEXT
 docker pull ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
 
-# --- Start nieuwe (NEXT) app container ---
 NEW_NAME="sportstore-$NEXT"
 OLD_NAME="sportstore-$ACTIVE"
 docker rm -f "$NEW_NAME" >/dev/null 2>&1 || true
@@ -224,7 +225,7 @@ docker run -d --name "$NEW_NAME" \
   --restart=always \
   ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
 
-# --- Readiness check ---
+# Readiness check
 for i in {1..60}; do
   if docker run --rm --network app-net curlimages/curl:8.8.0 -fsS "http://$NEW_NAME:80/" >/dev/null 2>&1; then
     echo "New app is ready"
@@ -234,12 +235,12 @@ for i in {1..60}; do
   sleep 2
 done
 
-# --- Switch Nginx upstream ---
+# Switch Nginx upstream
 sed -i "s/server sportstore-.*:80;/server $NEW_NAME:80;/" "$NGINX_DIR/app.conf"
 docker exec sportstore-edge nginx -t
 docker exec sportstore-edge nginx -s reload
 
-# --- Markeer & opruimen ---
+# Markeer & opruimen
 echo "$NEXT" > "$ACTIVE_FILE"
 docker rm -f "$OLD_NAME" >/dev/null 2>&1 || true
 
@@ -258,7 +259,7 @@ ENDSSH
       }
       steps {
         sshagent(credentials: ["${CLOUD_SSH_CREDENTIALS}"]) {
-          sh '''#!/bin/bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 SSH_OPTS="-o StrictHostKeyChecking=no"
 
@@ -288,7 +289,7 @@ sudo chown -R $USER:$USER "$BASE_DIR"
 
 # --- Docker login & network ---
 echo "$GITHUB_TOKEN" | docker login ghcr.io -u tariqasifi --password-stdin
-docker network inspect app-net >/div/null 2>&1 || docker network create app-net
+docker network inspect app-net >/dev/null 2>&1 || docker network create app-net
 
 # --- Certificaten voor Nginx ---
 [ -f "$CERT_DIR/tls.key" ] || openssl genrsa -out "$CERT_DIR/tls.key" 2048
@@ -407,7 +408,7 @@ docker pull ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
 
 NEW_NAME="sportstore-$NEXT"
 OLD_NAME="sportstore-$ACTIVE"
-docker rm -f "$NEW_NAME" >/dev/null 2>&1 || true
+docker rm -f "$NEW_NAME" >/devnull 2>&1 || true
 
 docker run -d --name "$NEW_NAME" \
   -e DB_IP=sqlserver \
