@@ -92,7 +92,7 @@ sudo chown -R $USER:$USER "$BASE_DIR"
 echo "$GITHUB_TOKEN" | docker login ghcr.io -u tariqasifi --password-stdin
 docker network inspect app-net >/dev/null 2>&1 || docker network create app-net
 
-# --- Certificaten voor Nginx (self-signed) ---
+# --- Certs (self-signed) ---
 [ -f "$CERT_DIR/tls.key" ] || openssl genrsa -out "$CERT_DIR/tls.key" 2048
 if [ ! -f "$CERT_DIR/tls.crt" ]; then
   openssl req -x509 -new -nodes -key "$CERT_DIR/tls.key" -sha256 -days 365 -subj "/CN=localhost" -out "$CERT_DIR/tls.crt"
@@ -116,7 +116,7 @@ fi
 
 # --- Nginx reverse proxy (host 80/443) ---
 
-# Stop/disable host nginx/apache2 alleen als aanwezig (stille logs)
+# Stop/disable host nginx/apache2 alleen als aanwezig
 if systemctl list-unit-files | grep -q '^nginx\\.service'; then
   systemctl is-active --quiet nginx && sudo systemctl stop nginx || true
   systemctl is-enabled --quiet nginx && sudo systemctl disable nginx || true
@@ -189,6 +189,20 @@ server {
 NGX
 fi
 
+# (Nieuw) Zorg dat app.conf naar een lopende kleur wijst vóór reloads
+RUNNING_TARGET=""
+if docker ps --format '{{.Names}}' | grep -q '^sportstore-blue$'; then RUNNING_TARGET="sportstore-blue"; fi
+if docker ps --format '{{.Names}}' | grep -q '^sportstore-green$'; then
+  if [ -n "$RUNNING_TARGET" ] && [ -f "$ACTIVE_FILE" ] && [ "$(cat "$ACTIVE_FILE" 2>/dev/null)" = "green" ]; then
+    RUNNING_TARGET="sportstore-green"
+  elif [ -z "$RUNNING_TARGET" ]; then
+    RUNNING_TARGET="sportstore-green"
+  fi
+fi
+if [ -n "$RUNNING_TARGET" ] && [ -f "$NGINX_DIR/app.conf" ]; then
+  sed -i -E "s/server sportstore-[a-z]+:[0-9]+;/server ${RUNNING_TARGET}:80;/" "$NGINX_DIR/app.conf"
+fi
+
 # Start of herlaad edge-proxy
 if ! docker ps --format '{{.Names}}' | grep -q '^sportstore-edge$'; then
   docker rm -f sportstore-edge >/dev/null 2>&1 || true
@@ -201,7 +215,8 @@ if ! docker ps --format '{{.Names}}' | grep -q '^sportstore-edge$'; then
     --restart=always \
     nginx:1.25-alpine
 else
-  docker exec sportstore-edge nginx -t && docker exec sportstore-edge nginx -s reload || true
+  docker exec sportstore-edge nginx -t || true
+  docker exec sportstore-edge nginx -s reload || true
 fi
 
 # --- Blue/Green ---
@@ -214,7 +229,9 @@ NEW_NAME="sportstore-$NEXT"
 OLD_NAME="sportstore-$ACTIVE"
 docker rm -f "$NEW_NAME" >/dev/null 2>&1 || true
 
+# Forceer .NET naar poort 80 (belangrijk!)
 docker run -d --name "$NEW_NAME" \
+  -e ASPNETCORE_URLS=http://+:80 \
   -e DB_IP=sqlserver \
   -e DB_PORT=1433 \
   -e DB_NAME=SportStoreDb \
@@ -234,12 +251,13 @@ for i in {1..60}; do
   echo "Waiting for new app ($i/60)..."; sleep 2
 done
 if [ "$READY" != "true" ]; then
-  echo "ERROR: New app did not become ready, aborting deploy."
+  echo "ERROR: New app did not become ready, showing logs:" >&2
+  docker logs --tail=200 "$NEW_NAME" || true
   exit 1
 fi
 
 # Switch Nginx upstream en reload
-sed -i "s/server sportstore-.*:80;/server $NEW_NAME:80;/" "$NGINX_DIR/app.conf"
+sed -i -E "s/server sportstore-[a-z]+:[0-9]+;/server ${NEW_NAME}:80;/" "$NGINX_DIR/app.conf"
 docker exec sportstore-edge nginx -t
 docker exec sportstore-edge nginx -s reload
 
@@ -389,6 +407,20 @@ server {
 NGX
 fi
 
+# (Nieuw) self-heal app.conf naar lopende kleur
+RUNNING_TARGET=""
+if docker ps --format '{{.Names}}' | grep -q '^sportstore-blue$'; then RUNNING_TARGET="sportstore-blue"; fi
+if docker ps --format '{{.Names}}' | grep -q '^sportstore-green$'; then
+  if [ -n "$RUNNING_TARGET" ] && [ -f "$ACTIVE_FILE" ] && [ "$(cat "$ACTIVE_FILE" 2>/dev/null)" = "green" ]; then
+    RUNNING_TARGET="sportstore-green"
+  elif [ -z "$RUNNING_TARGET" ]; then
+    RUNNING_TARGET="sportstore-green"
+  fi
+fi
+if [ -n "$RUNNING_TARGET" ] && [ -f "$NGINX_DIR/app.conf" ]; then
+  sed -i -E "s/server sportstore-[a-z]+:[0-9]+;/server ${RUNNING_TARGET}:80;/" "$NGINX_DIR/app.conf"
+fi
+
 # Start of herlaad edge-proxy
 if ! docker ps --format '{{.Names}}' | grep -q '^sportstore-edge$'; then
   docker rm -f sportstore-edge >/dev/null 2>&1 || true
@@ -401,7 +433,8 @@ if ! docker ps --format '{{.Names}}' | grep -q '^sportstore-edge$'; then
     --restart=always \
     nginx:1.25-alpine
 else
-  docker exec sportstore-edge nginx -t && docker exec sportstore-edge nginx -s reload || true
+  docker exec sportstore-edge nginx -t || true
+  docker exec sportstore-edge nginx -s reload || true
 fi
 
 # --- Blue/Green ---
@@ -414,7 +447,9 @@ NEW_NAME="sportstore-$NEXT"
 OLD_NAME="sportstore-$ACTIVE"
 docker rm -f "$NEW_NAME" >/dev/null 2>&1 || true
 
+# Forceer .NET naar poort 80
 docker run -d --name "$NEW_NAME" \
+  -e ASPNETCORE_URLS=http://+:80 \
   -e DB_IP=sqlserver \
   -e DB_PORT=1433 \
   -e DB_NAME=SportStoreDb \
@@ -425,7 +460,7 @@ docker run -d --name "$NEW_NAME" \
   --restart=always \
   ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
 
-# --- Readiness check; alleen switchen als READY ---
+# --- Readiness ---
 READY=false
 for i in {1..60}; do
   if docker run --rm --network app-net curlimages/curl:8.8.0 -fsS "http://$NEW_NAME:80/" >/dev/null 2>&1; then
@@ -434,12 +469,13 @@ for i in {1..60}; do
   echo "Waiting for new app ($i/60)..."; sleep 2
 done
 if [ "$READY" != "true" ]; then
-  echo "ERROR: New app did not become ready, aborting deploy."
+  echo "ERROR: New app did not become ready, showing logs:" >&2
+  docker logs --tail=200 "$NEW_NAME" || true
   exit 1
 fi
 
-# Switch Nginx upstream en reload
-sed -i "s/server sportstore-.*:80;/server $NEW_NAME:80;/" "$NGINX_DIR/app.conf"
+# Switch & reload
+sed -i -E "s/server sportstore-[a-z]+:[0-9]+;/server ${NEW_NAME}:80;/" "$NGINX_DIR/app.conf"
 docker exec sportstore-edge nginx -t
 docker exec sportstore-edge nginx -s reload
 
