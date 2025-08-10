@@ -26,6 +26,7 @@ pipeline {
     stage('Test') {
       steps {
         sh '''
+          set -euxo pipefail
           dotnet restore tests/Domain.Tests/Domain.Tests.csproj
           dotnet test tests/Domain.Tests/Domain.Tests.csproj --configuration Release --no-build
         '''
@@ -54,6 +55,7 @@ pipeline {
     stage('Docker Build & Push') {
       steps {
         sh """
+          set -euxo pipefail
           docker build -t ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} -f src/Dockerfile .
           docker push ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} --disable-content-trust=true
           docker tag ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} ${REGISTRY}/${IMAGE_NAME}:latest
@@ -84,7 +86,6 @@ CERT_DIR="$BASE_DIR/certs"
 NGINX_DIR="$BASE_DIR/nginx"
 ACTIVE_FILE="$BASE_DIR/active_color"
 sudo mkdir -p "$BASE_DIR" "$CERT_DIR" "$NGINX_DIR"
-# Belangrijk: geef eigenaarschap aan huidige user (fix voor Permission denied)
 sudo chown -R $USER:$USER "$BASE_DIR"
 
 # --- Docker login & network ---
@@ -114,6 +115,25 @@ if ! docker ps --format '{{.Names}}' | grep -q '^sqlserver$'; then
 fi
 
 # --- Nginx reverse proxy (host 80/443) ---
+
+# Zorg dat host-services die 80/443 gebruiken uit staan
+sudo systemctl stop nginx || true
+sudo systemctl disable nginx || true
+sudo systemctl stop apache2 || true
+sudo systemctl disable apache2 || true
+
+# Containers die 80/443 bezetten opruimen (behalve sportstore-edge)
+for P in 80 443; do
+  for CID in $(docker ps -q --filter "publish=$P"); do
+    NAME=$(docker inspect -f '{{.Name}}' "$CID" | sed 's#^/##')
+    if [ "$NAME" != "sportstore-edge" ]; then
+      echo "Port $P in gebruik door container $NAME ($CID) – stop/verwijder..."
+      docker stop "$CID" || true
+      docker rm "$CID" || true
+    fi
+  done
+done
+
 # Genereer nginx.conf + app.conf indien ze ontbreken
 if [ ! -f "$NGINX_DIR/nginx.conf" ]; then
   cat > "$NGINX_DIR/nginx.conf" <<'NGX'
@@ -162,7 +182,7 @@ server {
 NGX
 fi
 
-# Start Nginx container indien niet actief
+# Start of herlaad edge-proxy
 if ! docker ps --format '{{.Names}}' | grep -q '^sportstore-edge$'; then
   docker rm -f sportstore-edge >/dev/null 2>&1 || true
   docker run -d --name sportstore-edge \
@@ -268,7 +288,7 @@ sudo chown -R $USER:$USER "$BASE_DIR"
 
 # --- Docker login & network ---
 echo "$GITHUB_TOKEN" | docker login ghcr.io -u tariqasifi --password-stdin
-docker network inspect app-net >/dev/null 2>&1 || docker network create app-net
+docker network inspect app-net >/div/null 2>&1 || docker network create app-net
 
 # --- Certificaten voor Nginx ---
 [ -f "$CERT_DIR/tls.key" ] || openssl genrsa -out "$CERT_DIR/tls.key" 2048
@@ -292,7 +312,27 @@ if ! docker ps --format '{{.Names}}' | grep -q '^sqlserver$'; then
   fi
 fi
 
-# --- Nginx reverse proxy ---
+# --- Nginx reverse proxy (host 80/443) ---
+
+# Host services die poorten claimen uitschakelen
+sudo systemctl stop nginx || true
+sudo systemctl disable nginx || true
+sudo systemctl stop apache2 || true
+sudo systemctl disable apache2 || true
+
+# Containers die 80/443 bezetten opruimen (behalve sportstore-edge)
+for P in 80 443; do
+  for CID in $(docker ps -q --filter "publish=$P"); do
+    NAME=$(docker inspect -f '{{.Name}}' "$CID" | sed 's#^/##')
+    if [ "$NAME" != "sportstore-edge" ]; then
+      echo "Port $P in gebruik door container $NAME ($CID) – stop/verwijder..."
+      docker stop "$CID" || true
+      docker rm "$CID" || true
+    fi
+  done
+done
+
+# Config genereren indien nodig
 if [ ! -f "$NGINX_DIR/nginx.conf" ]; then
   cat > "$NGINX_DIR/nginx.conf" <<'NGX'
 user  nginx;
@@ -340,6 +380,7 @@ server {
 NGX
 fi
 
+# Start of herlaad edge-proxy
 if ! docker ps --format '{{.Names}}' | grep -q '^sportstore-edge$'; then
   docker rm -f sportstore-edge >/dev/null 2>&1 || true
   docker run -d --name sportstore-edge \
