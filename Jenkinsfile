@@ -92,14 +92,14 @@ sudo chown -R $USER:$USER "$BASE_DIR"
 echo "$GITHUB_TOKEN" | docker login ghcr.io -u tariqasifi --password-stdin
 docker network inspect app-net >/dev/null 2>&1 || docker network create app-net
 
-# --- Certificaten voor Nginx (TLS termination) ---
+# --- Certificaten voor Nginx (self-signed) ---
 [ -f "$CERT_DIR/tls.key" ] || openssl genrsa -out "$CERT_DIR/tls.key" 2048
 if [ ! -f "$CERT_DIR/tls.crt" ]; then
   openssl req -x509 -new -nodes -key "$CERT_DIR/tls.key" -sha256 -days 365 -subj "/CN=localhost" -out "$CERT_DIR/tls.crt"
 fi
 chmod 600 "$CERT_DIR/tls.key" "$CERT_DIR/tls.crt" || true
 
-# --- SQL Server: start eenmaal, blijf draaien ---
+# --- SQL Server persistent ---
 if ! docker ps --format '{{.Names}}' | grep -q '^sqlserver$'; then
   if ! docker ps -a --format '{{.Names}}' | grep -q '^sqlserver$'; then
     docker run -d --name sqlserver \
@@ -116,20 +116,27 @@ fi
 
 # --- Nginx reverse proxy (host 80/443) ---
 
-# Host-services die 80/443 gebruiken uitschakelen
-sudo systemctl stop nginx || true
-sudo systemctl disable nginx || true
-sudo systemctl stop apache2 || true
-sudo systemctl disable apache2 || true
+# Stop/disable host nginx/apache2 alleen als aanwezig (stille logs)
+if systemctl list-unit-files | grep -q '^nginx\\.service'; then
+  systemctl is-active --quiet nginx && sudo systemctl stop nginx || true
+  systemctl is-enabled --quiet nginx && sudo systemctl disable nginx || true
+fi
+if systemctl list-unit-files | grep -q '^apache2\\.service'; then
+  systemctl is-active --quiet apache2 && sudo systemctl stop apache2 || true
+  systemctl is-enabled --quiet apache2 && sudo systemctl disable apache2 || true
+fi
 
-# Containers die 80/443 bezetten opruimen (behalve sportstore-edge)
+# Opruimen containers die hostpoort 80/443 claimen (behalve sportstore-edge)
 for P in 80 443; do
-  for CID in $(docker ps -q --filter "publish=$P"); do
+  for CID in $(docker ps -q); do
     NAME=$(docker inspect -f '{{.Name}}' "$CID" | sed 's#^/##')
-    if [ "$NAME" != "sportstore-edge" ]; then
-      echo "Port $P in gebruik door container $NAME ($CID) – stop/verwijder..."
-      docker stop "$CID" || true
-      docker rm "$CID" || true
+    HOSTBINDS=$(docker inspect -f '{{range $k,$v := .NetworkSettings.Ports}}{{if $v}}{{range $v}}{{.HostIp}}:{{.HostPort}} {{end}}{{end}}{{end}}' "$CID")
+    if echo "$HOSTBINDS" | grep -qE "(^| )0\\.0\\.0\\.0:${P}|(^| ):::${P}"; then
+      if [ "$NAME" != "sportstore-edge" ]; then
+        echo "Port $P in gebruik door $NAME ($CID) – stop/verwijder..."
+        docker stop "$CID" >/dev/null 2>&1 || true
+        docker rm "$CID"   >/dev/null 2>&1 || true
+      fi
     fi
   done
 done
@@ -218,15 +225,20 @@ docker run -d --name "$NEW_NAME" \
   --restart=always \
   ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
 
-# Readiness check
+# --- Readiness check; alleen switchen als READY ---
+READY=false
 for i in {1..60}; do
   if docker run --rm --network app-net curlimages/curl:8.8.0 -fsS "http://$NEW_NAME:80/" >/dev/null 2>&1; then
-    echo "New app is ready"; break
+    echo "New app is ready"; READY=true; break
   fi
   echo "Waiting for new app ($i/60)..."; sleep 2
 done
+if [ "$READY" != "true" ]; then
+  echo "ERROR: New app did not become ready, aborting deploy."
+  exit 1
+fi
 
-# Switch Nginx upstream
+# Switch Nginx upstream en reload
 sed -i "s/server sportstore-.*:80;/server $NEW_NAME:80;/" "$NGINX_DIR/app.conf"
 docker exec sportstore-edge nginx -t
 docker exec sportstore-edge nginx -s reload
@@ -266,8 +278,6 @@ fi
 if ! docker run --rm hello-world >/dev/null 2>&1; then
   sudo usermod -aG docker $USER || true
 fi
-
-# Gebruik sudo consistent op cloud
 alias docker='sudo docker'
 
 # --- Vars & dirs ---
@@ -306,20 +316,27 @@ fi
 
 # --- Nginx reverse proxy (host 80/443) ---
 
-# Host services die poorten claimen uitschakelen
-sudo systemctl stop nginx || true
-sudo systemctl disable nginx || true
-sudo systemctl stop apache2 || true
-sudo systemctl disable apache2 || true
+# Stop/disable host nginx/apache2 alleen als aanwezig
+if systemctl list-unit-files | grep -q '^nginx\\.service'; then
+  systemctl is-active --quiet nginx && sudo systemctl stop nginx || true
+  systemctl is-enabled --quiet nginx && sudo systemctl disable nginx || true
+fi
+if systemctl list-unit-files | grep -q '^apache2\\.service'; then
+  systemctl is-active --quiet apache2 && sudo systemctl stop apache2 || true
+  systemctl is-enabled --quiet apache2 && sudo systemctl disable apache2 || true
+fi
 
-# Containers die 80/443 bezetten opruimen (behalve sportstore-edge)
+# Opruimen containers die hostpoort 80/443 claimen (behalve sportstore-edge)
 for P in 80 443; do
-  for CID in $(docker ps -q --filter "publish=$P"); do
+  for CID in $(docker ps -q); do
     NAME=$(docker inspect -f '{{.Name}}' "$CID" | sed 's#^/##')
-    if [ "$NAME" != "sportstore-edge" ]; then
-      echo "Port $P in gebruik door container $NAME ($CID) – stop/verwijder..."
-      docker stop "$CID" || true
-      docker rm "$CID" || true
+    HOSTBINDS=$(docker inspect -f '{{range $k,$v := .NetworkSettings.Ports}}{{if $v}}{{range $v}}{{.HostIp}}:{{.HostPort}} {{end}}{{end}}{{end}}' "$CID")
+    if echo "$HOSTBINDS" | grep -qE "(^| )0\\.0\\.0\\.0:${P}|(^| ):::${P}"; then
+      if [ "$NAME" != "sportstore-edge" ]; then
+        echo "Port $P in gebruik door $NAME ($CID) – stop/verwijder..."
+        docker stop "$CID" >/dev/null 2>&1 || true
+        docker rm "$CID"   >/dev/null 2>&1 || true
+      fi
     fi
   done
 done
@@ -408,18 +425,25 @@ docker run -d --name "$NEW_NAME" \
   --restart=always \
   ${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}
 
-# Readiness check
+# --- Readiness check; alleen switchen als READY ---
+READY=false
 for i in {1..60}; do
   if docker run --rm --network app-net curlimages/curl:8.8.0 -fsS "http://$NEW_NAME:80/" >/dev/null 2>&1; then
-    echo "New app is ready"; break
+    echo "New app is ready"; READY=true; break
   fi
   echo "Waiting for new app ($i/60)..."; sleep 2
 done
+if [ "$READY" != "true" ]; then
+  echo "ERROR: New app did not become ready, aborting deploy."
+  exit 1
+fi
 
+# Switch Nginx upstream en reload
 sed -i "s/server sportstore-.*:80;/server $NEW_NAME:80;/" "$NGINX_DIR/app.conf"
 docker exec sportstore-edge nginx -t
 docker exec sportstore-edge nginx -s reload
 
+# Markeer & opruimen
 echo "$NEXT" > "$ACTIVE_FILE"
 docker rm -f "$OLD_NAME" >/dev/null 2>&1 || true
 
