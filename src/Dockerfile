@@ -1,8 +1,10 @@
-# Gebruik de officiële .NET 8 runtime als base image
+## Opmerking: Deze code is gebaseerd op de code uit het eerste project/zit en aangepast voor dit project.
+
+# Gebruik de officiële .NET 6 runtime als base image
 FROM mcr.microsoft.com/dotnet/aspnet:6.0 AS base
 WORKDIR /app
 
-# Build stage met .NET 8 SDK
+# Build stage met .NET 6 SDK
 FROM mcr.microsoft.com/dotnet/sdk:6.0 AS build
 WORKDIR /src
 
