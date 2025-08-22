@@ -185,7 +185,7 @@ NEW_NAME="sportstore-$NEXT"
 OLD_NAME="sportstore-$ACTIVE"
 docker rm -f "$NEW_NAME" >/dev/null 2>&1 || true
 
-# --- Start app ZONDER migrations (entrypoint override) ---
+# --- Start app  (entrypoint override) ---
 docker run -d --name "$NEW_NAME" \
   --entrypoint /bin/sh \
   -e ASPNETCORE_URLS=http://+:80 \
